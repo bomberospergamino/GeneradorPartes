@@ -13,23 +13,35 @@ function doPost(e) {
   try {
     const payload = JSON.parse(e.postData.contents || '{}');
     const action = payload.action || 'guardarParte';
-    if (action === 'guardarParte') return jsonResponse(saveParte(payload.parte));
-    if (action === 'metricas') return jsonResponse(rebuildMetricas());
+    if (action === 'guardarParte') return outputResponse(saveParte(payload.parte, payload.options || {}), e);
+    if (action === 'metricas') return outputResponse(rebuildMetricas(), e);
     throw new Error('Accion no soportada: ' + action);
   } catch (error) {
-    return jsonResponse({ ok: false, error: error.message });
+    return outputResponse({ ok: false, error: error.message }, e);
   }
 }
 
-function saveParte(parte) {
+function doGet(e) {
+  try {
+    const action = (e && e.parameter && e.parameter.action) || 'data';
+    if (action === 'data') return outputResponse(getData(), e);
+    if (action === 'metricas') return outputResponse(rebuildMetricas(), e);
+    throw new Error('Accion no soportada: ' + action);
+  } catch (error) {
+    return outputResponse({ ok: false, error: error.message }, e);
+  }
+}
+
+function saveParte(parte, options) {
   if (!parte) throw new Error('Falta parte');
   const ss = SpreadsheetApp.openById(CONFIG.spreadsheetId);
   const servicioId = parte.id || Utilities.getUuid();
   const parteServicio = parte.acta || [parte.parteNumero, parte.parteAnio].filter(Boolean).join('/');
   const duracionHoras = getDurationHours(parte);
   const now = new Date();
+  removeDuplicateParteRows(ss, parteServicio, servicioId);
 
-  appendObject(ss, CONFIG.sheets.servicios, {
+  upsertObject(ss, CONFIG.sheets.servicios, 'servicio_id', servicioId, {
     servicio_id: servicioId,
     parte_numero: parte.parteNumero || '',
     parte_anio: parte.parteAnio || '',
@@ -62,9 +74,13 @@ function saveParte(parte) {
     poliza2: parte.poliza2 || 'N/A',
     estado: parte.status || '',
     creado_en: parte.createdAt || now,
-    completado_en: parte.completedAt || ''
+    completado_en: parte.completedAt || '',
+    frente_impreso_en: parte.printedFrontAt || '',
+    dotacion_impresa_en: parte.printedCrewAt || '',
+    actualizado_en: parte.updatedAt || now
   });
 
+  deleteRowsByValue(ss, CONFIG.sheets.dotacion, 'servicio_id', servicioId);
   (parte.crew || []).forEach(item => appendObject(ss, CONFIG.sheets.dotacion, {
     servicio_id: servicioId,
     parte_servicio: parteServicio,
@@ -76,6 +92,7 @@ function saveParte(parte) {
     tipo_servicio: parte.tipo || ''
   }));
 
+  deleteRowsByValue(ss, CONFIG.sheets.moviles, 'servicio_id', servicioId);
   (parte.mobiles || []).forEach(item => appendObject(ss, CONFIG.sheets.moviles, {
     servicio_id: servicioId,
     parte_servicio: parteServicio,
@@ -89,9 +106,19 @@ function saveParte(parte) {
     distancia_km: Number(parte.distancia || 0)
   }));
 
-  saveEditableCopy(parteServicio, parte);
+  if (options && options.saveEditable) saveEditableCopy(parteServicio, parte);
   rebuildMetricas();
   return { ok: true, servicio_id: servicioId };
+}
+
+function getData() {
+  const ss = SpreadsheetApp.openById(CONFIG.spreadsheetId);
+  return {
+    ok: true,
+    servicios: readObjects(ss, CONFIG.sheets.servicios),
+    dotacion: readObjects(ss, CONFIG.sheets.dotacion),
+    moviles: readObjects(ss, CONFIG.sheets.moviles)
+  };
 }
 
 function appendObject(ss, sheetName, object) {
@@ -111,6 +138,80 @@ function appendObject(ss, sheetName, object) {
   sheet.appendRow(row);
 }
 
+function upsertObject(ss, sheetName, keyName, keyValue, object) {
+  const sheet = ss.getSheetByName(sheetName) || ss.insertSheet(sheetName);
+  ensureHeader(sheet, Object.keys(object));
+  const header = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const keyIndex = header.indexOf(keyName);
+  let targetRow = 0;
+  if (keyIndex >= 0 && sheet.getLastRow() > 1) {
+    const values = sheet.getRange(2, keyIndex + 1, sheet.getLastRow() - 1, 1).getValues();
+    const foundIndex = values.findIndex(row => String(row[0]) === String(keyValue));
+    if (foundIndex >= 0) targetRow = foundIndex + 2;
+  }
+  const row = header.map(key => object[key] ?? '');
+  if (targetRow) sheet.getRange(targetRow, 1, 1, row.length).setValues([row]);
+  else sheet.appendRow(row);
+}
+
+function ensureHeader(sheet, keys) {
+  if (sheet.getLastRow() === 0) sheet.appendRow(keys);
+  const header = sheet.getRange(1, 1, 1, Math.max(1, sheet.getLastColumn())).getValues()[0];
+  const headerSet = new Set(header);
+  keys.forEach(key => {
+    if (!headerSet.has(key)) {
+      sheet.getRange(1, sheet.getLastColumn() + 1).setValue(key);
+      headerSet.add(key);
+    }
+  });
+}
+
+function deleteRowsByValue(ss, sheetName, keyName, keyValue) {
+  const sheet = ss.getSheetByName(sheetName);
+  if (!sheet || sheet.getLastRow() < 2) return;
+  const header = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const keyIndex = header.indexOf(keyName);
+  if (keyIndex < 0) return;
+  const values = sheet.getRange(2, keyIndex + 1, sheet.getLastRow() - 1, 1).getValues();
+  for (let index = values.length - 1; index >= 0; index--) {
+    if (String(values[index][0]) === String(keyValue)) sheet.deleteRow(index + 2);
+  }
+}
+
+function removeDuplicateParteRows(ss, parteServicio, keepServicioId) {
+  const sheet = ss.getSheetByName(CONFIG.sheets.servicios);
+  if (!sheet || sheet.getLastRow() < 2) return;
+  const header = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const parteIndex = header.indexOf('parte_servicio');
+  const idIndex = header.indexOf('servicio_id');
+  if (parteIndex < 0 || idIndex < 0) return;
+  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues();
+  const duplicateIds = [];
+  for (let index = rows.length - 1; index >= 0; index--) {
+    const row = rows[index];
+    if (String(row[parteIndex]) === String(parteServicio) && String(row[idIndex]) !== String(keepServicioId)) {
+      duplicateIds.push(String(row[idIndex]));
+      sheet.deleteRow(index + 2);
+    }
+  }
+  duplicateIds.forEach(id => {
+    deleteRowsByValue(ss, CONFIG.sheets.dotacion, 'servicio_id', id);
+    deleteRowsByValue(ss, CONFIG.sheets.moviles, 'servicio_id', id);
+  });
+}
+
+function readObjects(ss, sheetName) {
+  const sheet = ss.getSheetByName(sheetName);
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  const values = sheet.getRange(1, 1, sheet.getLastRow(), sheet.getLastColumn()).getValues();
+  const header = values[0].map(String);
+  return values.slice(1).map(row => {
+    const object = {};
+    header.forEach((key, index) => object[key] = row[index]);
+    return object;
+  });
+}
+
 function rebuildMetricas() {
   const ss = SpreadsheetApp.openById(CONFIG.spreadsheetId);
   const servicios = ss.getSheetByName(CONFIG.sheets.servicios);
@@ -125,8 +226,31 @@ function rebuildMetricas() {
 
 function saveEditableCopy(parteServicio, parte) {
   const folder = DriveApp.getFolderById(CONFIG.driveFolderId);
-  const name = ('parte-' + parteServicio + '.json').replace(/[\\/:*?"<>|]/g, '-');
-  folder.createFile(name, JSON.stringify(parte, null, 2), MimeType.PLAIN_TEXT);
+  const name = ('Parte ' + parteServicio).replace(/[\\/:*?"<>|]/g, '-');
+  const existing = folder.getFilesByName(name);
+  while (existing.hasNext()) existing.next().setTrashed(true);
+  const doc = DocumentApp.create(name);
+  const body = doc.getBody();
+  body.clear();
+  body.appendParagraph('Sociedad de Bomberos Voluntarios Pergamino').setHeading(DocumentApp.ParagraphHeading.HEADING2);
+  body.appendParagraph('Parte de servicio ' + parteServicio).setHeading(DocumentApp.ParagraphHeading.HEADING1);
+  body.appendParagraph('Codigo: ' + (parte.codigo || '') + ' | Tipo: ' + (parte.tipo || ''));
+  body.appendParagraph('Ubicacion: ' + (parte.ubicacion || ''));
+  body.appendParagraph('A cargo: ' + (parte.aCargo || '') + ' | Operador/a: ' + (parte.operador || ''));
+  body.appendParagraph('Salida: ' + (parte.fechaSalida || '') + ' ' + (parte.horaSalida || ''));
+  body.appendParagraph('Regreso: ' + (parte.fechaRegreso || '') + ' ' + (parte.horaRegreso || ''));
+  body.appendParagraph('Reconocimiento').setHeading(DocumentApp.ParagraphHeading.HEADING3);
+  body.appendParagraph(parte.reconocimiento || '');
+  body.appendParagraph('Disposiciones').setHeading(DocumentApp.ParagraphHeading.HEADING3);
+  body.appendParagraph(parte.disposiciones || '');
+  body.appendParagraph('Perdidas').setHeading(DocumentApp.ParagraphHeading.HEADING3);
+  body.appendParagraph(parte.perdidas || '');
+  body.appendParagraph('Dotacion').setHeading(DocumentApp.ParagraphHeading.HEADING3);
+  (parte.crew || []).forEach(item => body.appendParagraph((item.person || '') + ' - ' + (item.role || '')));
+  doc.saveAndClose();
+  const file = DriveApp.getFileById(doc.getId());
+  folder.addFile(file);
+  DriveApp.getRootFolder().removeFile(file);
 }
 
 function getDurationHours(parte) {
@@ -137,8 +261,15 @@ function getDurationHours(parte) {
   return diff > 0 ? diff : 0;
 }
 
-function jsonResponse(data) {
+function outputResponse(data, e) {
+  const json = JSON.stringify(data);
+  const callback = e && e.parameter && e.parameter.callback;
+  if (callback) {
+    return ContentService
+      .createTextOutput(callback + '(' + json + ');')
+      .setMimeType(ContentService.MimeType.JAVASCRIPT);
+  }
   return ContentService
-    .createTextOutput(JSON.stringify(data))
+    .createTextOutput(json)
     .setMimeType(ContentService.MimeType.JSON);
 }

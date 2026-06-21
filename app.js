@@ -86,62 +86,32 @@ const seed = {
   ].map(([name, grade]) => ({ name, grade }))
 };
 
-const DB_NAME = "sbvp-partes-db";
-const DB_VERSION = 1;
 const PERSONAL_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1fkfiSwjaFuysUVHaTTaHziDee0Atmrpo-cbH_iqrCuw/gviz/tq?tqx=out:csv&sheet=PERSONAL";
 const DEFAULT_APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx9TtL5TXjuNKsJbBALfVpPFysSsZZu_o8OMbYZbPy3BA94hsG3eomJNNH0GmRsZl7xvg/exec";
-let db;
 let editingId = null;
-let directoryHandle = null;
 let selectedPendingId = null;
+let activeLoadSlot = 0;
+let loadSlotSequence = 1;
+let loadSlots = [{ id: 1, title: "CARGA 1", draft: null }];
+let remoteServices = [];
+let roster = seed.people;
+let metricView = "general";
+let metricFrom = "";
+let metricTo = "";
+let selectedMobile = "";
+let selectedPerson = "";
+let personSearch = "";
+let pendingSearch = "";
+let printSearch = "";
+let metricBoundsReady = false;
+const typeColors = {};
+const defaultTypeColors = ["#123f73", "#1f7a4f", "#c9972d", "#8f1d1d", "#5d5fef", "#167f92", "#9b5d16", "#4c6f2b", "#6a3d9a", "#444"];
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
 
-function openDb() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = () => {
-      const database = request.result;
-      database.createObjectStore("services", { keyPath: "id" });
-      database.createObjectStore("settings", { keyPath: "key" });
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-function store(name, mode = "readonly") {
-  return db.transaction(name, mode).objectStore(name);
-}
-
-function dbGetAll(name) {
-  return new Promise((resolve, reject) => {
-    const request = store(name).getAll();
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-function dbPut(name, value) {
-  return new Promise((resolve, reject) => {
-    const request = store(name, "readwrite").put(value);
-    request.onsuccess = () => resolve(value);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-function dbClear(name) {
-  return new Promise((resolve, reject) => {
-    const request = store(name, "readwrite").clear();
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-  });
-}
-
 function people() {
-  const custom = localStorage.getItem("sbvpPeople");
-  return custom ? JSON.parse(custom) : seed.people;
+  return roster;
 }
 
 function refreshPeopleControls() {
@@ -231,7 +201,7 @@ function addMobileRow(data = {}) {
   $("#mobileRows").append(node);
 }
 
-function resetForm() {
+function resetForm(clearDraft = true) {
   editingId = null;
   $("#serviceForm").reset();
   $('[name="parteAnio"]').value = "26";
@@ -243,6 +213,74 @@ function resetForm() {
   $("#mobileRows").innerHTML = "";
   addMobileRow();
   renderCrewPanel();
+  if (clearDraft) loadSlots[activeLoadSlot].draft = null;
+}
+
+function serializeCurrentForm() {
+  const form = new FormData($("#serviceForm"));
+  const data = Object.fromEntries(form.entries());
+  data.mobiles = $$(".mobile-row").map(row => ({
+    name: $(".mobile-name", row).value,
+    driver: $(".mobile-driver", row).value
+  }));
+  data.crew = $$(".crew-person-card").map(card => ({
+    person: card.dataset.person,
+    role: $(".crew-role", card).value
+  })).filter(item => item.person && item.role);
+  return data;
+}
+
+function saveCurrentDraft() {
+  loadSlots[activeLoadSlot].draft = serializeCurrentForm();
+}
+
+function loadDraft(slotIndex) {
+  const data = loadSlots[slotIndex]?.draft;
+  resetForm(false);
+  activeLoadSlot = slotIndex;
+  if (!data) {
+    renderLoadTabs();
+    return;
+  }
+  Object.entries(data).forEach(([key, value]) => {
+    const field = $(`[name="${key}"]`);
+    if (field && typeof value !== "object") field.value = value || "";
+  });
+  $("#mobileRows").innerHTML = "";
+  (data.mobiles?.length ? data.mobiles : [{}]).forEach(addMobileRow);
+  renderCrewPanel(data.crew || []);
+  renderLoadTabs();
+}
+
+function renderLoadTabs() {
+  $("#loadTabs").innerHTML = loadSlots.map((slot, index) => `
+    <button type="button" class="load-tab ${index === activeLoadSlot ? "active" : ""}" data-load-slot="${index}">
+      <span>${escapeHtml(slot.title)}</span>
+      <span class="load-close" data-close-load="${index}" title="Cerrar carga">x</span>
+    </button>
+  `).join("");
+}
+
+function addLoadSlot() {
+  saveCurrentDraft();
+  loadSlotSequence += 1;
+  loadSlots.push({ id: loadSlotSequence, title: `CARGA ${loadSlotSequence}`, draft: null });
+  activeLoadSlot = loadSlots.length - 1;
+  resetForm(false);
+  renderLoadTabs();
+}
+
+function closeLoadSlot(slotIndex) {
+  if (loadSlots.length === 1) {
+    loadSlots[0].draft = null;
+    activeLoadSlot = 0;
+    resetForm(false);
+    renderLoadTabs();
+    return;
+  }
+  loadSlots.splice(slotIndex, 1);
+  activeLoadSlot = Math.max(0, Math.min(activeLoadSlot, loadSlots.length - 1));
+  loadDraft(activeLoadSlot);
 }
 
 function collectForm(status = "pending") {
@@ -273,50 +311,198 @@ function collectForm(status = "pending") {
 
 async function saveService(status = "pending") {
   const current = collectForm(status);
-  const previous = editingId ? (await dbGetAll("services")).find(item => item.id === editingId) : null;
+  const duplicate = remoteServices.find(item => item.acta && item.acta === current.acta && item.id !== current.id);
+  const replacingDuplicate = !!duplicate;
+  if (duplicate) {
+    const replace = confirm("Usted esta por reemplazar un parte existente, está seguro?");
+    if (!replace) return;
+    current.id = duplicate.id;
+    editingId = duplicate.id;
+  }
+  const previous = editingId ? remoteServices.find(item => item.id === editingId) : duplicate || null;
   const service = {
     ...previous,
     ...current,
-    status: previous?.status === "complete" ? "complete" : current.status,
+    status: !replacingDuplicate && previous?.status === "complete" ? "complete" : current.status,
     downloadedAt: previous?.downloadedAt || current.downloadedAt,
     createdAt: previous?.createdAt || current.createdAt
   };
-  await dbPut("services", service);
-  await saveEditable(service);
+  remoteServices = upsertLocalService(service);
+  await sendToAppsScript(service);
   resetForm();
-  await renderAll();
+  renderLoadTabs();
+  await loadRemoteServices();
+  showToast(`Parte ${service.acta || "S/N"} guardado correctamente.`);
   showView("pendientes");
 }
 
-async function saveEditable(service) {
-  const filename = `parte-${service.acta || service.id}.json`.replace(/[\\/:*?"<>|]/g, "-");
-  const payload = JSON.stringify(service, null, 2);
-  if (directoryHandle) {
-    try {
-      const fileHandle = await directoryHandle.getFileHandle(filename, { create: true });
-      const writable = await fileHandle.createWritable();
-      await writable.write(payload);
-      await writable.close();
-      return;
-    } catch (error) {
-      console.warn("No se pudo guardar en carpeta", error);
-    }
-  }
-}
-
-async function sendToAppsScript(service) {
-  const url = localStorage.getItem("appsScriptUrl") || DEFAULT_APPS_SCRIPT_URL;
+async function sendToAppsScript(service, options = {}) {
+  const url = DEFAULT_APPS_SCRIPT_URL;
   if (!url) return;
   try {
     await fetch(url, {
       method: "POST",
       mode: "no-cors",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({ action: "guardarParte", parte: service })
+      body: JSON.stringify({ action: "guardarParte", parte: service, options })
     });
   } catch (error) {
     console.warn("No se pudo enviar a Apps Script", error);
   }
+}
+
+function showToast(message) {
+  const toast = $("#toast");
+  if (!toast) return alert(message);
+  toast.textContent = message;
+  toast.classList.add("show");
+  clearTimeout(showToast.timeout);
+  showToast.timeout = setTimeout(() => toast.classList.remove("show"), 3200);
+}
+
+function upsertLocalService(service) {
+  const withoutCurrent = remoteServices.filter(item => item.id !== service.id);
+  return [service, ...withoutCurrent];
+}
+
+function jsonp(url) {
+  return new Promise((resolve, reject) => {
+    const callback = `sbvpJsonp_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const script = document.createElement("script");
+    const separator = url.includes("?") ? "&" : "?";
+    window[callback] = data => {
+      delete window[callback];
+      script.remove();
+      resolve(data);
+    };
+    script.onerror = () => {
+      delete window[callback];
+      script.remove();
+      reject(new Error("No se pudo leer la hoja de calculos"));
+    };
+    script.src = `${url}${separator}action=data&callback=${callback}&t=${Date.now()}`;
+    document.body.append(script);
+  });
+}
+
+async function loadRemoteServices() {
+  try {
+    const data = await jsonp(DEFAULT_APPS_SCRIPT_URL);
+    if (!data?.ok) throw new Error(data?.error || "Respuesta invalida");
+    remoteServices = normalizeRemoteData(data);
+    metricBoundsReady = false;
+  } catch (error) {
+    console.warn(error);
+  }
+  await renderAll();
+}
+
+function normalizeRemoteData(data) {
+  const crewById = groupRows(data.dotacion || [], "servicio_id");
+  const mobileById = groupRows(data.moviles || [], "servicio_id");
+  const services = (data.servicios || []).map(row => {
+    const id = textValue(row.servicio_id) || generateId(row.parte_servicio);
+    const acta = textValue(row.parte_servicio);
+    return {
+      id,
+      parteNumero: textValue(row.parte_numero) || acta.split("/")[0] || "",
+      parteAnio: textValue(row.parte_anio) || acta.split("/")[1] || "26",
+      acta,
+      codigo: textValue(row.codigo_servicio),
+      tipo: textValue(row.tipo_servicio),
+      denunciante: textValue(row.denunciante),
+      telefono: textValue(row.telefono),
+      ubicacion: textValue(row.ubicacion),
+      distancia: numberValue(row.distancia_km),
+      fechaLlamada: dateValue(row.fecha_llamada),
+      horaLlamada: timeValue(row.hora_llamada),
+      fechaSalida: dateValue(row.fecha_salida),
+      horaSalida: timeValue(row.hora_salida),
+      fechaRegreso: dateValue(row.fecha_regreso),
+      horaRegreso: timeValue(row.hora_regreso),
+      aCargo: textValue(row.persona_a_cargo),
+      operador: textValue(row.operador),
+      reconocimiento: textValue(row.reconocimiento),
+      disposiciones: textValue(row.disposiciones),
+      perdidas: textValue(row.perdidas),
+      propietario1: textValue(row.propietario1) || "N/A",
+      dniPropietario1: textValue(row.dni_propietario1) || "N/A",
+      compania1: textValue(row.compania1) || "N/A",
+      poliza1: textValue(row.poliza1) || "N/A",
+      propietario2: textValue(row.propietario2) || "N/A",
+      dniPropietario2: textValue(row.dni_propietario2) || "N/A",
+      compania2: textValue(row.compania2) || "N/A",
+      poliza2: textValue(row.poliza2) || "N/A",
+      status: textValue(row.estado) || "pending",
+      createdAt: isoDateTime(row.creado_en) || new Date().toISOString(),
+      completedAt: isoDateTime(row.completado_en),
+      printedFrontAt: isoDateTime(row.frente_impreso_en),
+      printedCrewAt: isoDateTime(row.dotacion_impresa_en),
+      updatedAt: isoDateTime(row.actualizado_en),
+      crew: (crewById[id] || []).map(item => ({ person: textValue(item.persona), role: textValue(item.rol) })).filter(item => item.person),
+      mobiles: (mobileById[id] || []).map(item => ({ name: textValue(item.movil), driver: textValue(item.chofer) })).filter(item => item.name || item.driver)
+    };
+  });
+  return latestByParte(services);
+}
+
+function latestByParte(services) {
+  const byActa = new Map();
+  services.forEach(service => {
+    if (!service.acta) {
+      byActa.set(service.id, service);
+      return;
+    }
+    const previous = byActa.get(service.acta);
+    const previousDate = new Date(previous?.updatedAt || previous?.createdAt || 0).getTime();
+    const currentDate = new Date(service.updatedAt || service.createdAt || 0).getTime();
+    if (!previous || currentDate >= previousDate) byActa.set(service.acta, service);
+  });
+  return [...byActa.values()];
+}
+
+function groupRows(rows, key) {
+  return rows.reduce((acc, row) => {
+    const value = textValue(row[key]);
+    if (!value) return acc;
+    acc[value] ||= [];
+    acc[value].push(row);
+    return acc;
+  }, {});
+}
+
+function textValue(value) {
+  if (value === null || value === undefined) return "";
+  return String(value).trim();
+}
+
+function numberValue(value) {
+  const number = Number(String(value ?? "").replace(",", "."));
+  return Number.isFinite(number) ? number : 0;
+}
+
+function dateValue(value) {
+  if (!value) return "";
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  const text = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(text)) return text.slice(0, 10);
+  const match = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+  if (!match) return text.slice(0, 10);
+  const year = match[3].length === 2 ? `20${match[3]}` : match[3];
+  return `${year}-${match[2].padStart(2, "0")}-${match[1].padStart(2, "0")}`;
+}
+
+function timeValue(value) {
+  if (!value) return "";
+  const text = String(value).trim();
+  const match = text.match(/(\d{1,2}):(\d{2})/);
+  return match ? `${match[1].padStart(2, "0")}:${match[2]}` : "";
+}
+
+function isoDateTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
 }
 
 function serviceSummary(service) {
@@ -346,6 +532,7 @@ function renderServiceCard(service, actions = "") {
 function renderPendingCard(service) {
   const card = renderServiceCard(service, `
     <button class="primary" data-action="open-complete" data-id="${service.id}">Seleccionar</button>
+    <button class="secondary" data-action="print-incomplete" data-id="${service.id}">Imprimir sin completar</button>
     <button class="ghost" data-action="edit" data-id="${service.id}">Editar</button>
   `);
   return selectedPendingId && selectedPendingId !== service.id ? card.replace('class="service-item"', 'class="service-item hidden-while-zoom"') : card;
@@ -408,13 +595,17 @@ function renderCompletionEditor(service) {
 }
 
 async function renderAll() {
-  const services = await dbGetAll("services");
+  const services = [...remoteServices];
   services.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   const last = services[0];
   $("#lastService").textContent = last ? `Parte ${last.acta || "S/N"}` : "Sin partes";
-  const pending = services.filter(s => !s.status || s.status === "pending");
+  const pending = services
+    .filter(s => !s.status || s.status === "pending")
+    .filter(service => matchesSearch(service, pendingSearch));
   pending.sort((a, b) => (a.aCargo || "").localeCompare(b.aCargo || "") || new Date(b.createdAt) - new Date(a.createdAt));
-  const printQueue = services.filter(s => s.status === "ready_print" || (s.status === "complete" && (!s.printedFrontAt || !s.printedCrewAt)));
+  const printQueue = services
+    .filter(s => s.status === "ready_print" || (s.status === "complete" && (!s.printedFrontAt || !s.printedCrewAt)))
+    .filter(service => matchesSearch(service, printSearch));
   printQueue.sort((a, b) => (a.aCargo || "").localeCompare(b.aCargo || "") || (a.acta || "").localeCompare(b.acta || ""));
   $("#pendingBadge").textContent = pending.length;
   $("#printBadge").textContent = printQueue.length;
@@ -425,6 +616,23 @@ async function renderAll() {
   renderCompletionEditor(selected);
   renderHistory(services);
   renderMetrics(services);
+}
+
+function matchesSearch(service, term) {
+  if (!term) return true;
+  const haystack = [
+    service.acta,
+    service.parteNumero,
+    service.codigo,
+    service.tipo,
+    service.ubicacion,
+    service.aCargo,
+    service.operador,
+    service.denunciante,
+    ...(service.mobiles || []).flatMap(item => [item.name, item.driver]),
+    ...(service.crew || []).map(item => item.person)
+  ].join(" ").toLowerCase();
+  return haystack.includes(term);
 }
 
 function renderHistory(services) {
@@ -440,17 +648,48 @@ function renderHistory(services) {
 }
 
 function renderMetrics(services) {
-  const total = services.length;
-  const hours = services.reduce((sum, service) => sum + durationHours(service), 0);
-  const crewTotal = services.reduce((sum, service) => sum + service.crew.length, 0);
-  const uniqueMobiles = new Set(services.flatMap(service => service.mobiles.map(m => m.name).filter(Boolean)));
+  ensureMetricBounds(services);
+  const filtered = filterServicesByPeriod(services);
+  renderPeriodText();
+  const total = filtered.length;
+  const hours = filtered.reduce((sum, service) => sum + durationHours(service), 0);
+  const crewTotal = filtered.reduce((sum, service) => sum + service.crew.length, 0);
+  const uniqueMobiles = new Set(filtered.flatMap(service => service.mobiles.map(m => m.name).filter(Boolean)));
   $("#mTotal").textContent = total;
   $("#mHours").textContent = hours.toFixed(1);
   $("#mCrew").textContent = total ? (crewTotal / total).toFixed(1) : "0";
   $("#mMobiles").textContent = uniqueMobiles.size;
-  renderBars("#typeMetrics", countBy(services, s => s.codigo || "Sin codigo"));
-  renderBars("#mobileMetrics", mobileHours(services), "hs");
-  renderPeopleMetrics(services);
+  renderCurve(filtered);
+  renderBars("#typeMetrics", countBy(filtered, s => s.codigo || "Sin codigo"));
+  renderPie("#typePie", countBy(filtered, s => s.codigo || "Sin codigo"));
+  renderBars("#kmByMobile", mobileKm(filtered), " km");
+  renderMobileCards(filtered);
+  renderPeopleCards(filtered);
+}
+
+function ensureMetricBounds(services) {
+  if (metricBoundsReady) return;
+  const dates = services.map(service => service.fechaSalida || service.createdAt?.slice(0, 10)).filter(Boolean).sort();
+  metricFrom = dates[0] || "";
+  metricTo = today();
+  $("#metricFrom").value = metricFrom;
+  $("#metricTo").value = metricTo;
+  metricBoundsReady = true;
+}
+
+function filterServicesByPeriod(services) {
+  return services.filter(service => {
+    const value = service.fechaSalida || service.createdAt?.slice(0, 10) || "";
+    if (metricFrom && value < metricFrom) return false;
+    if (metricTo && value > metricTo) return false;
+    return true;
+  });
+}
+
+function renderPeriodText() {
+  const from = metricFrom || "el inicio";
+  const to = metricTo || "hoy";
+  $("#periodText").textContent = `Usted esta viendo el periodo de ${from} a ${to}.`;
 }
 
 function countBy(items, getter) {
@@ -473,6 +712,17 @@ function mobileHours(services) {
   return totals;
 }
 
+function mobileKm(services) {
+  const totals = {};
+  services.forEach(service => {
+    service.mobiles.forEach(mobile => {
+      if (!mobile.name) return;
+      totals[mobile.name] = (totals[mobile.name] || 0) + Number(service.distancia || 0);
+    });
+  });
+  return totals;
+}
+
 function renderBars(selector, data, suffix = "") {
   const entries = Object.entries(data).sort((a, b) => b[1] - a[1]).slice(0, 12);
   const max = Math.max(1, ...entries.map(([, value]) => value));
@@ -485,25 +735,169 @@ function renderBars(selector, data, suffix = "") {
   `).join("") : `<p class="muted">Sin datos todavia.</p>`;
 }
 
-function renderPeopleMetrics(services) {
+function renderCurve(services) {
+  const dates = [...new Set(services.map(s => s.fechaSalida || s.createdAt?.slice(0, 10)).filter(Boolean))].sort();
+  const types = [...new Set(services.map(s => s.codigo || "Sin codigo"))].sort();
+  if (!dates.length || !types.length) {
+    $("#serviceCurve").innerHTML = `<p class="muted">Sin datos para el periodo.</p>`;
+    return;
+  }
+  const width = 900;
+  const height = 260;
+  const pad = 34;
+  const byTypeDate = {};
+  let max = 1;
+  types.forEach(type => {
+    byTypeDate[type] = dates.map(date => {
+      const count = services.filter(s => (s.codigo || "Sin codigo") === type && (s.fechaSalida || s.createdAt?.slice(0, 10)) === date).length;
+      max = Math.max(max, count);
+      return count;
+    });
+  });
+  types.forEach((type, index) => typeColors[type] ||= defaultTypeColors[index % defaultTypeColors.length]);
+  renderTypeColorControls(types);
+  const x = index => dates.length === 1 ? width / 2 : pad + index * ((width - pad * 2) / (dates.length - 1));
+  const y = value => height - pad - (value / max) * (height - pad * 2);
+  const paths = types.map((type, typeIndex) => {
+    const points = byTypeDate[type].map((value, index) => `${x(index)},${y(value)}`).join(" ");
+    const dots = byTypeDate[type].map((value, index) => `<circle cx="${x(index)}" cy="${y(value)}" r="4" fill="${typeColors[type]}"></circle>`).join("");
+    return `<g><polyline points="${points}" fill="none" stroke="${typeColors[type]}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><title>${escapeHtml(type)}</title></polyline>${dots}</g>`;
+  }).join("");
+  const legend = types.map(type => `<span><i style="background:${typeColors[type]}"></i>${escapeHtml(type)}</span>`).join("");
+  $("#serviceCurve").innerHTML = `
+    <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Curva de servicios por fecha y tipo">
+      <line x1="${pad}" y1="${height - pad}" x2="${width - pad}" y2="${height - pad}" stroke="#9aa4af"/>
+      <line x1="${pad}" y1="${pad}" x2="${pad}" y2="${height - pad}" stroke="#9aa4af"/>
+      ${paths}
+    </svg>
+    <div class="chart-legend">${legend}</div>
+  `;
+}
+
+function renderTypeColorControls(types) {
+  const target = $("#typeColorControls");
+  if (!target) return;
+  target.innerHTML = types.map(type => `
+    <label class="color-chip">
+      <input type="color" data-type-color="${escapeHtml(type)}" value="${typeColors[type]}">
+      <span>${escapeHtml(type)}</span>
+    </label>
+  `).join("");
+}
+
+function renderPie(selector, data) {
+  const entries = Object.entries(data).filter(([, value]) => value > 0).sort((a, b) => b[1] - a[1]);
+  const total = entries.reduce((sum, [, value]) => sum + value, 0);
+  if (!entries.length) {
+    $(selector).innerHTML = `<p class="muted">Sin datos para el periodo.</p>`;
+    return;
+  }
+  let angle = 0;
+  const stops = entries.map(([label, value], index) => {
+    const start = angle;
+    angle += (value / total) * 100;
+    const color = typeColors[label] || defaultTypeColors[index % defaultTypeColors.length];
+    return `${color} ${start}% ${angle}%`;
+  }).join(", ");
+  const legend = entries.map(([label, value], index) => {
+    const color = typeColors[label] || defaultTypeColors[index % defaultTypeColors.length];
+    const percent = ((value / total) * 100).toFixed(1);
+    return `<span><i style="background:${color}"></i>${escapeHtml(label)} ${percent}%</span>`;
+  }).join("");
+  $(selector).innerHTML = `<div class="pie" style="background: conic-gradient(${stops})"></div><div class="chart-legend">${legend}</div>`;
+}
+
+function renderMobileCards(services) {
+  const hours = mobileHours(services);
+  const kms = mobileKm(services);
+  const mobiles = Object.keys({ ...hours, ...kms }).sort((a, b) => a.localeCompare(b));
+  if (!selectedMobile && mobiles.length) selectedMobile = mobiles[0];
+  $("#mobileCards").innerHTML = mobiles.length ? mobiles.map(mobile => {
+    const active = mobile === selectedMobile ? " active" : "";
+    return `<button class="profile-card${active}" data-mobile-profile="${escapeHtml(mobile)}"><strong>${escapeHtml(mobile)}</strong><span>${(kms[mobile] || 0).toFixed(1)} km</span><span>${(hours[mobile] || 0).toFixed(1)} hs</span></button>`;
+  }).join("") : `<p class="muted">Sin moviles en el periodo.</p>`;
+  renderMobileProfile(services);
+}
+
+function renderMobileProfile(services) {
+  const target = $("#mobileProfile");
+  if (!selectedMobile) {
+    target.innerHTML = `<p class="muted">Selecciona un movil para ver el detalle.</p>`;
+    return;
+  }
+  const mobileServices = services
+    .filter(service => service.mobiles.some(item => item.name === selectedMobile))
+    .sort((a, b) => (b.fechaSalida || "").localeCompare(a.fechaSalida || ""));
+  const hours = mobileServices.reduce((sum, service) => sum + durationHours(service), 0);
+  const km = mobileServices.reduce((sum, service) => sum + Number(service.distancia || 0), 0);
+  target.innerHTML = `
+    <div class="profile-head">
+      <h3>${escapeHtml(selectedMobile)}</h3>
+      <span>${mobileServices.length} servicios</span>
+      <span>${hours.toFixed(1)} hs</span>
+      <span>${km.toFixed(1)} km</span>
+    </div>
+    <div class="table-list compact">
+      ${mobileServices.length ? mobileServices.map(service => `<article class="service-item"><strong>Parte ${escapeHtml(service.acta || "S/N")}</strong><span>${escapeHtml(service.fechaSalida || "")}</span><span>${escapeHtml(service.codigo || "")}</span><span>A cargo: ${escapeHtml(service.aCargo || "")}</span><span>${Number(service.distancia || 0).toFixed(1)} km</span></article>`).join("") : `<p class="muted">Sin servicios en este periodo.</p>`}
+    </div>
+  `;
+}
+
+function renderPeopleCards(services) {
+  const totals = personTotals(services);
+  const rows = Object.entries(totals)
+    .filter(([name]) => !personSearch || name.toLowerCase().includes(personSearch))
+    .sort((a, b) => a[0].localeCompare(b[0]));
+  if (!selectedPerson && rows.length) selectedPerson = rows[0][0];
+  $("#personCards").innerHTML = rows.length ? rows.map(([name, data]) => {
+    const active = name === selectedPerson ? " active" : "";
+    return `<button class="profile-card${active}" data-person-profile="${escapeHtml(name)}"><strong>${escapeHtml(name)}</strong><span>D/CH: ${data.duty}</span><span>R: ${data.standby}</span><span>${data.hours.toFixed(1)} hs</span></button>`;
+  }).join("") : `<p class="muted">Sin bomberos para esa busqueda.</p>`;
+  renderPersonProfile(services);
+}
+
+function personTotals(services) {
   const totals = {};
   services.forEach(service => {
     const hours = durationHours(service);
     service.crew.forEach(item => {
       if (!item.person) return;
-      totals[item.person] ||= { count: 0, hours: 0 };
-      totals[item.person].count += 1;
+      totals[item.person] ||= { duty: 0, standby: 0, paid: 0, other: 0, hours: 0 };
+      if (item.role === "D" || item.role === "CH") totals[item.person].duty += 1;
+      else if (item.role === "R") totals[item.person].standby += 1;
+      else if (item.role === "G/P") totals[item.person].paid += 1;
+      else totals[item.person].other += 1;
       totals[item.person].hours += hours;
     });
   });
-  const rows = Object.entries(totals).sort((a, b) => b[1].count - a[1].count).slice(0, 20);
-  $("#personMetrics").innerHTML = rows.length ? rows.map(([name, data]) => `
-    <article class="service-item">
-      <strong>${escapeHtml(name)}</strong>
-      <span>${data.count} servicios</span>
-      <span>${data.hours.toFixed(1)} hs</span>
-    </article>
-  `).join("") : `<p class="muted">Sin asistencias registradas.</p>`;
+  return totals;
+}
+
+function renderPersonProfile(services) {
+  const target = $("#personProfile");
+  if (!selectedPerson) {
+    target.innerHTML = `<p class="muted">Selecciona un bombero para ver el detalle.</p>`;
+    return;
+  }
+  const personServices = services
+    .filter(service => service.crew.some(item => item.person === selectedPerson))
+    .sort((a, b) => (b.fechaSalida || "").localeCompare(a.fechaSalida || ""));
+  const hours = personServices.reduce((sum, service) => sum + durationHours(service), 0);
+  const total = personTotals(services)[selectedPerson] || { duty: 0, standby: 0, paid: 0, other: 0 };
+  target.innerHTML = `
+    <div class="profile-head">
+      <h3>${escapeHtml(selectedPerson)}</h3>
+      <span>D/CH: ${total.duty}</span>
+      <span>R: ${total.standby}</span>
+      <span>G/P: ${total.paid}</span>
+      <span>${hours.toFixed(1)} hs</span>
+    </div>
+    <div class="split">
+      <div class="panel inner-panel"><h3>Tipos de servicio</h3><div id="personTypePie"></div></div>
+      <div class="panel inner-panel"><h3>Servicios recientes</h3><div class="table-list compact">${personServices.length ? personServices.map(service => `<article class="service-item"><strong>Parte ${escapeHtml(service.acta || "S/N")}</strong><span>${escapeHtml(service.fechaSalida || "")}</span><span>${escapeHtml(service.codigo || "")}</span><span>${escapeHtml(service.ubicacion || "")}</span></article>`).join("") : `<p class="muted">Sin servicios en este periodo.</p>`}</div></div>
+    </div>
+  `;
+  renderPie("#personTypePie", countBy(personServices, service => service.codigo || "Sin codigo"));
 }
 
 function makePrintHtml(service, incomplete = false, mode = "all") {
@@ -537,12 +931,11 @@ function makePrintHtml(service, incomplete = false, mode = "all") {
   }).join("");
   const mobileRows = service.mobiles.map(item => `<tr><td>${escapeHtml(item.name)}</td><td>${escapeHtml(item.driver)}</td></tr>`).join("");
   const frontHtml = `
-    <section class="print-sheet">
+    <section class="print-sheet ${incomplete ? "print-incomplete-sheet" : ""}">
       <div class="print-title">
         <img src="logo-sbvp.png" alt="">
         <div><p>Sociedad de Bomberos Voluntarios Pergamino</p><h2>Parte de servicio</h2></div>
       </div>
-      ${incomplete ? `<div class="watermark">IMPRESION INCOMPLETA</div>` : ""}
       <div class="print-grid">${blocks.map(([label, value]) => `<div class="print-cell"><b>${label}</b>${escapeHtml(value || "")}</div>`).join("")}</div>
       <div class="print-block"><h3>Reconocimiento</h3>${escapeHtml(service.reconocimiento || "")}</div>
       <div class="print-block"><h3>Disposiciones</h3>${escapeHtml(service.disposiciones || "")}</div>
@@ -572,7 +965,6 @@ function makePrintHtml(service, incomplete = false, mode = "all") {
         <img src="logo-sbvp.png" alt="">
         <div><h2>Asistencia del cuerpo activo</h2><p>Parte ${escapeHtml(service.acta || "")} | ${escapeHtml(service.codigo || "")}</p></div>
       </div>
-      ${incomplete ? `<div class="watermark">IMPRESION INCOMPLETA</div>` : ""}
       <p><b>Abreviaturas:</b> Dotacion (D) - Retenido (R) - Guardia Paga (G/P) - Chofer (CH)</p>
       <table class="attendance-table full-roster"><thead><tr><th>Apellido / Nombre</th><th>Grado</th><th></th><th>Apellido / Nombre</th><th>Grado</th><th></th></tr></thead><tbody>${attendanceRows}</tbody></table>
     </section>
@@ -583,10 +975,11 @@ function makePrintHtml(service, incomplete = false, mode = "all") {
 }
 
 async function printService(id, incomplete = false, mode = "all") {
-  const service = (await dbGetAll("services")).find(item => item.id === id);
+  const service = remoteServices.find(item => item.id === id);
   if (!service) return;
   $("#printRoot").innerHTML = makePrintHtml(service, incomplete, mode);
   window.print();
+  return service;
 }
 
 function printDraftFromForm() {
@@ -596,7 +989,7 @@ function printDraftFromForm() {
 }
 
 async function completeService(id) {
-  const service = (await dbGetAll("services")).find(item => item.id === id);
+  const service = remoteServices.find(item => item.id === id);
   if (!service) return;
   const panel = $("#completionEditor .completion-panel");
   if (panel) {
@@ -610,11 +1003,10 @@ async function completeService(id) {
   service.status = "ready_print";
   service.completedAt = new Date().toISOString();
   service.updatedAt = new Date().toISOString();
-  await dbPut("services", service);
-  await saveEditable(service);
+  remoteServices = upsertLocalService(service);
   await sendToAppsScript(service);
   selectedPendingId = null;
-  await renderAll();
+  await loadRemoteServices();
   showView("imprimir");
 }
 
@@ -624,18 +1016,19 @@ async function openCompletion(id) {
 }
 
 async function markPrinted(id, kind) {
-  const service = (await dbGetAll("services")).find(item => item.id === id);
+  const service = remoteServices.find(item => item.id === id);
   if (!service) return;
   if (kind === "front") service.printedFrontAt = new Date().toISOString();
   if (kind === "crew") service.printedCrewAt = new Date().toISOString();
   if (service.printedFrontAt && service.printedCrewAt) service.status = "complete";
   service.updatedAt = new Date().toISOString();
-  await dbPut("services", service);
-  await renderAll();
+  remoteServices = upsertLocalService(service);
+  await sendToAppsScript(service, { saveEditable: true });
+  await loadRemoteServices();
 }
 
 async function editService(id) {
-  const service = (await dbGetAll("services")).find(item => item.id === id);
+  const service = remoteServices.find(item => item.id === id);
   if (!service) return;
   editingId = id;
   Object.entries(service).forEach(([key, value]) => {
@@ -660,7 +1053,7 @@ function importPeople() {
   const lines = $("#peopleCsv").value.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
   const imported = parsePeopleRows(lines.map(line => line.includes(";") ? line.split(";") : splitCsvLine(line)));
   if (!imported.length) return;
-  localStorage.setItem("sbvpPeople", JSON.stringify(imported));
+  roster = imported;
   refreshPeopleControls();
   alert(`Personal importado: ${imported.length}`);
 }
@@ -701,7 +1094,7 @@ function parsePeopleRows(rows) {
 
 async function syncPeopleFromSheet(showProgress = true) {
   const status = $("#peopleSyncStatus");
-  if (showProgress) status.textContent = "Sincronizando PERSONAL...";
+  if (status && showProgress) status.textContent = "Sincronizando PERSONAL...";
   try {
     const response = await fetch(PERSONAL_SHEET_CSV_URL, { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -709,11 +1102,11 @@ async function syncPeopleFromSheet(showProgress = true) {
     const rows = text.split(/\r?\n/).filter(Boolean).map(splitCsvLine);
     const imported = parsePeopleRows(rows);
     if (!imported.length) throw new Error("No se encontraron filas de personal");
-    localStorage.setItem("sbvpPeople", JSON.stringify(imported));
+    roster = imported;
     refreshPeopleControls();
-    status.textContent = `PERSONAL sincronizado: ${imported.length} personas.`;
+    if (status) status.textContent = `PERSONAL sincronizado: ${imported.length} personas.`;
   } catch (error) {
-    status.textContent = "No se pudo leer PERSONAL. Revisar permisos/publicacion del Google Sheet.";
+    if (status) status.textContent = "No se pudo leer PERSONAL. Revisar permisos/publicacion del Google Sheet.";
   }
 }
 
@@ -735,52 +1128,93 @@ function bindActions() {
       await printService(id, false, "crew");
       await markPrinted(id, "crew");
     }
+    if (action === "print-incomplete") {
+      const service = await printService(id, true, "all");
+      if (service) await sendToAppsScript(service, { saveEditable: true });
+    }
     if (action === "complete") await completeService(id);
     if (action === "edit") await editService(id);
   });
   $$(".tab").forEach(tab => tab.addEventListener("click", () => showView(tab.dataset.view)));
+  document.addEventListener("click", event => {
+    const closeButton = event.target.closest("[data-close-load]");
+    if (closeButton) {
+      event.preventDefault();
+      event.stopPropagation();
+      closeLoadSlot(Number(closeButton.dataset.closeLoad));
+      return;
+    }
+    const loadButton = event.target.closest("[data-load-slot]");
+    if (!loadButton) return;
+    saveCurrentDraft();
+    loadDraft(Number(loadButton.dataset.loadSlot));
+  });
+  document.addEventListener("input", event => {
+    const colorInput = event.target.closest("[data-type-color]");
+    if (!colorInput) return;
+    typeColors[colorInput.dataset.typeColor] = colorInput.value;
+    renderMetrics(remoteServices);
+  });
+  document.addEventListener("click", event => {
+    const mobileCard = event.target.closest("[data-mobile-profile]");
+    if (mobileCard) {
+      selectedMobile = mobileCard.dataset.mobileProfile;
+      renderMetrics(remoteServices);
+      return;
+    }
+    const personCard = event.target.closest("[data-person-profile]");
+    if (personCard) {
+      selectedPerson = personCard.dataset.personProfile;
+      renderMetrics(remoteServices);
+    }
+  });
+  $$(".subtab").forEach(tab => tab.addEventListener("click", () => {
+    metricView = tab.dataset.metricView;
+    $$(".subtab").forEach(item => item.classList.toggle("active", item === tab));
+    $$(".metric-pane").forEach(item => item.classList.toggle("active", item.id === `metric-${metricView}`));
+  }));
   $("#addMobile").addEventListener("click", () => addMobileRow());
   $("#clearCrew").addEventListener("click", () => renderCrewPanel());
+  $("#addLoadSlot").addEventListener("click", addLoadSlot);
   $("#newBlank").addEventListener("click", resetForm);
   $("#printDraft").addEventListener("click", printDraftFromForm);
   $("#historySearch").addEventListener("input", renderAll);
+  $("#pendingSearch").addEventListener("input", () => {
+    pendingSearch = $("#pendingSearch").value.toLowerCase().trim();
+    renderAll();
+  });
+  $("#printSearch").addEventListener("input", () => {
+    printSearch = $("#printSearch").value.toLowerCase().trim();
+    renderAll();
+  });
+  $("#applyMetricFilter").addEventListener("click", () => {
+    metricFrom = $("#metricFrom").value;
+    metricTo = $("#metricTo").value;
+    renderAll();
+  });
+  $("#personSearch").addEventListener("input", () => {
+    personSearch = $("#personSearch").value.toLowerCase().trim();
+    selectedPerson = "";
+    renderMetrics(remoteServices);
+  });
+  $("#serviceForm").addEventListener("input", saveCurrentDraft);
+  $("#serviceForm").addEventListener("change", saveCurrentDraft);
   $("#serviceForm").addEventListener("submit", event => {
     event.preventDefault();
     saveService("pending");
   });
-  $("#importPeople").addEventListener("click", importPeople);
-  $("#syncPeople").addEventListener("click", () => syncPeopleFromSheet(true));
-  $("#saveAppsScriptUrl").addEventListener("click", () => {
-    const url = $("#appsScriptUrl").value.trim();
-    if (url) localStorage.setItem("appsScriptUrl", url);
-    $("#folderStatus").textContent = url ? "URL de Apps Script guardada." : "Pegá una URL de Web App valida.";
-  });
-  $("#clearDemo").addEventListener("click", async () => {
-    if (!confirm("Borrar todos los partes guardados en esta computadora?")) return;
-    await dbClear("services");
-    await renderAll();
-  });
-  $("#pickFolder").addEventListener("click", async () => {
-    if (!window.showDirectoryPicker) {
-      $("#folderStatus").textContent = "Este navegador no permite elegir carpeta. Podemos usar Google Sheets en la proxima etapa.";
-      return;
-    }
-    directoryHandle = await window.showDirectoryPicker({ mode: "readwrite" });
-    $("#folderStatus").textContent = `Carpeta elegida: ${directoryHandle.name}`;
-  });
 }
 
 async function init() {
-  db = await openDb();
   bindActions();
-  $("#appsScriptUrl").value = localStorage.getItem("appsScriptUrl") || DEFAULT_APPS_SCRIPT_URL;
   renderSelects();
-  resetForm();
+  loadDraft(0);
+  renderLoadTabs();
   await syncPeopleFromSheet(false);
-  await renderAll();
+  await loadRemoteServices();
 }
 
 init().catch(error => {
   console.error(error);
-  alert("No se pudo iniciar la base local. Revisar permisos del navegador.");
+  alert("No se pudo iniciar la aplicacion. Revisar permisos del navegador.");
 });

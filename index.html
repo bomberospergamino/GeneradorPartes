@@ -27,7 +27,6 @@
     <button class="tab" data-view="imprimir">Para imprimir <span id="printBadge">0</span></button>
     <button class="tab" data-view="historico">Historico</button>
     <button class="tab" data-view="metricas">Metricas</button>
-    <button class="tab" data-view="config">Config.</button>
   </nav>
 
   <main>
@@ -38,6 +37,11 @@
             <h2>Nuevo parte</h2>
           </div>
           <button type="button" id="newBlank" class="ghost">Limpiar</button>
+        </div>
+
+        <div class="load-tabs">
+          <div id="loadTabs" class="load-tab-list"></div>
+          <button type="button" id="addLoadSlot" class="ghost">Agregar carga</button>
         </div>
 
         <div class="form-block">
@@ -130,6 +134,7 @@
             <h2>Para completar</h2>
             <p>Partes generados que todavia no fueron cerrados, descargados o impresos completos.</p>
           </div>
+          <label class="search-with-icon"><span>⌕</span><input id="pendingSearch" class="search" placeholder="Buscar parte, persona, ubicacion..."></label>
         </div>
         <div id="pendingList" class="table-list"></div>
         <div id="completionEditor" class="completion-editor"></div>
@@ -143,6 +148,7 @@
             <h2>Para imprimir</h2>
             <p>Partes completados que todavia tienen pendiente imprimir frente o dotacion.</p>
           </div>
+          <label class="search-with-icon"><span>⌕</span><input id="printSearch" class="search" placeholder="Buscar parte, persona, ubicacion..."></label>
         </div>
         <div id="printList" class="table-list"></div>
       </div>
@@ -162,42 +168,63 @@
     </section>
 
     <section id="metricas" class="view">
-      <div class="metric-grid">
-        <article class="metric-card"><span>Servicios</span><strong id="mTotal">0</strong></article>
-        <article class="metric-card"><span>Horas hombre</span><strong id="mHours">0</strong></article>
-        <article class="metric-card"><span>Promedio dotacion</span><strong id="mCrew">0</strong></article>
-        <article class="metric-card"><span>Moviles usados</span><strong id="mMobiles">0</strong></article>
-      </div>
-      <div class="split">
-        <div class="panel"><h2>Tipos de servicio</h2><div id="typeMetrics" class="bars"></div></div>
-        <div class="panel"><h2>Horas por movil</h2><div id="mobileMetrics" class="bars"></div></div>
-      </div>
-      <div class="panel"><h2>Asistencia del personal</h2><div id="personMetrics" class="table-list compact"></div></div>
-    </section>
-
-    <section id="config" class="view">
       <div class="panel">
-        <h2>Configuracion y datos</h2>
-        <div class="grid two">
-          <div class="info-box">
-            <h3>Personal</h3>
-            <p>El Google Sheet de PERSONAL no esta publico para descarga. Podes importar CSV con columnas: nombre;grado.</p>
-            <textarea id="peopleCsv" rows="8" placeholder="nombre;grado&#10;Morro, Marcos;Oficial Principal"></textarea>
-            <button id="importPeople" class="secondary">Importar personal</button>
-            <button id="syncPeople" class="ghost">Sincronizar PERSONAL</button>
-            <p id="peopleSyncStatus" class="muted">Usando listado local hasta poder leer la hoja PERSONAL.</p>
+        <div class="panel-title">
+          <div>
+            <h2>Metricas</h2>
+            <p id="periodText">Usted esta viendo el periodo completo.</p>
           </div>
-          <div class="info-box">
-            <h3>Drive</h3>
-            <p>Para guardar editable, elegi una carpeta local sincronizada con Drive. La conexion a Google Sheets queda preparada para la proxima etapa.</p>
-            <label>URL Web App Apps Script<input id="appsScriptUrl" placeholder="https://script.google.com/macros/s/.../exec"></label>
-            <button id="saveAppsScriptUrl" class="ghost">Guardar URL</button>
-            <button id="pickFolder" class="secondary">Elegir carpeta Drive</button>
-            <p id="folderStatus" class="muted">Sin carpeta elegida.</p>
+          <div class="period-filter">
+            <label>Desde<input id="metricFrom" type="date"></label>
+            <label>Hasta<input id="metricTo" type="date"></label>
+            <button id="applyMetricFilter" class="secondary">Aplicar</button>
           </div>
         </div>
-        <div class="actions">
-          <button id="clearDemo" class="danger">Borrar base local</button>
+        <div class="subtabs">
+          <button class="subtab active" data-metric-view="general">General</button>
+          <button class="subtab" data-metric-view="movil">Por movil</button>
+          <button class="subtab" data-metric-view="bombero">Por bombero</button>
+        </div>
+      </div>
+
+      <div id="metric-general" class="metric-pane active">
+        <div class="metric-grid">
+          <article class="metric-card"><span>Servicios</span><strong id="mTotal">0</strong></article>
+          <article class="metric-card"><span>Horas hombre</span><strong id="mHours">0</strong></article>
+          <article class="metric-card"><span>Promedio dotacion</span><strong id="mCrew">0</strong></article>
+          <article class="metric-card"><span>Moviles usados</span><strong id="mMobiles">0</strong></article>
+        </div>
+        <div class="panel">
+          <div class="section-head">
+            <h2>Servicios por fecha y tipo</h2>
+            <div id="typeColorControls" class="color-controls"></div>
+          </div>
+          <div id="serviceCurve" class="curve-chart"></div>
+        </div>
+        <div class="split">
+          <div class="panel"><h2>Tipos de servicio</h2><div id="typeMetrics" class="bars"></div></div>
+          <div class="panel"><h2>Torta por tipo</h2><div id="typePie" class="pie-panel"></div></div>
+        </div>
+        <div class="panel"><h2>Km por movil</h2><div id="kmByMobile" class="bars"></div></div>
+      </div>
+
+      <div id="metric-movil" class="metric-pane">
+        <div class="split metrics-profile-layout">
+          <div class="panel"><h2>Moviles</h2><div id="mobileCards" class="profile-grid"></div></div>
+          <div class="panel"><h2>Detalle del movil</h2><div id="mobileProfile"></div></div>
+        </div>
+      </div>
+
+      <div id="metric-bombero" class="metric-pane">
+        <div class="split metrics-profile-layout">
+          <div class="panel">
+            <div class="section-head">
+              <h2>Bomberos</h2>
+              <label class="search-with-icon"><span>⌕</span><input id="personSearch" class="search" placeholder="Buscar bombero"></label>
+            </div>
+            <div id="personCards" class="profile-grid"></div>
+          </div>
+          <div class="panel"><h2>Perfil del bombero</h2><div id="personProfile"></div></div>
         </div>
       </div>
     </section>
@@ -212,6 +239,7 @@
   </template>
 
   <div id="printRoot" aria-hidden="true"></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="app.js"></script>
 </body>
 </html>
