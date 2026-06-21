@@ -5,7 +5,8 @@ const CONFIG = {
     servicios: 'SERVICIOS',
     dotacion: 'SERVICIO_DOTACION',
     moviles: 'SERVICIO_MOVILES',
-    metricas: 'METRICAS'
+    metricas: 'METRICAS',
+    errores: 'ERRORES'
   }
 };
 
@@ -14,6 +15,7 @@ function doPost(e) {
     const payload = JSON.parse(e.postData.contents || '{}');
     const action = payload.action || 'guardarParte';
     if (action === 'guardarParte') return outputResponse(saveParte(payload.parte, payload.options || {}), e);
+    if (action === 'guardarEditable') return outputResponse(saveEditableOnly(payload.parte), e);
     if (action === 'metricas') return outputResponse(rebuildMetricas(), e);
     throw new Error('Accion no soportada: ' + action);
   } catch (error) {
@@ -106,9 +108,46 @@ function saveParte(parte, options) {
     distancia_km: Number(parte.distancia || 0)
   }));
 
-  if (options && options.saveEditable) saveEditableCopy(parteServicio, parte);
+  const shouldSaveEditable = options && options.saveEditable || parte.printedFrontAt || parte.printedCrewAt;
+  if (shouldSaveEditable) {
+    const editable = safeSaveEditableCopy(parteServicio, parte);
+    upsertObject(ss, CONFIG.sheets.servicios, 'servicio_id', servicioId, {
+      servicio_id: servicioId,
+      editable_id: editable.id || '',
+      editable_url: editable.url || '',
+      editable_guardado_en: editable.savedAt || '',
+      editable_error: editable.error || ''
+    });
+  }
   rebuildMetricas();
   return { ok: true, servicio_id: servicioId };
+}
+
+function saveEditableOnly(parte) {
+  if (!parte) throw new Error('Falta parte');
+  const parteServicio = parte.acta || [parte.parteNumero, parte.parteAnio].filter(Boolean).join('/');
+  return safeSaveEditableCopy(parteServicio, parte);
+}
+
+function probarCarpetaDrive() {
+  const result = saveEditableCopy('PRUEBA-DRIVE', {
+    acta: 'PRUEBA-DRIVE',
+    codigo: 'PRUEBA',
+    tipo: 'Conexion Drive',
+    ubicacion: 'Prueba',
+    aCargo: 'Prueba',
+    operador: 'Prueba',
+    fechaSalida: '',
+    horaSalida: '',
+    fechaRegreso: '',
+    horaRegreso: '',
+    reconocimiento: 'Archivo de prueba para verificar permisos de Drive.',
+    disposiciones: '',
+    perdidas: '',
+    crew: []
+  });
+  Logger.log(result.url);
+  return result;
 }
 
 function getData() {
@@ -149,9 +188,15 @@ function upsertObject(ss, sheetName, keyName, keyValue, object) {
     const foundIndex = values.findIndex(row => String(row[0]) === String(keyValue));
     if (foundIndex >= 0) targetRow = foundIndex + 2;
   }
-  const row = header.map(key => object[key] ?? '');
-  if (targetRow) sheet.getRange(targetRow, 1, 1, row.length).setValues([row]);
-  else sheet.appendRow(row);
+  if (targetRow) {
+    const existing = sheet.getRange(targetRow, 1, 1, header.length).getValues()[0];
+    const row = header.map((key, index) => Object.prototype.hasOwnProperty.call(object, key) ? object[key] ?? '' : existing[index]);
+    sheet.getRange(targetRow, 1, 1, row.length).setValues([row]);
+  }
+  else {
+    const row = header.map(key => object[key] ?? '');
+    sheet.appendRow(row);
+  }
 }
 
 function ensureHeader(sheet, keys) {
@@ -249,8 +294,27 @@ function saveEditableCopy(parteServicio, parte) {
   (parte.crew || []).forEach(item => body.appendParagraph((item.person || '') + ' - ' + (item.role || '')));
   doc.saveAndClose();
   const file = DriveApp.getFileById(doc.getId());
-  folder.addFile(file);
-  DriveApp.getRootFolder().removeFile(file);
+  file.moveTo(folder);
+  return { ok: true, id: doc.getId(), url: doc.getUrl(), savedAt: new Date().toISOString() };
+}
+
+function safeSaveEditableCopy(parteServicio, parte) {
+  try {
+    return saveEditableCopy(parteServicio, parte);
+  } catch (error) {
+    logError('saveEditableCopy', error, { parteServicio: parteServicio, folderId: CONFIG.driveFolderId });
+    return { ok: false, error: error.message };
+  }
+}
+
+function logError(context, error, extra) {
+  const ss = SpreadsheetApp.openById(CONFIG.spreadsheetId);
+  appendObject(ss, CONFIG.sheets.errores, {
+    fecha: new Date(),
+    contexto: context,
+    mensaje: error && error.message ? error.message : String(error),
+    detalle: JSON.stringify(extra || {})
+  });
 }
 
 function getDurationHours(parte) {

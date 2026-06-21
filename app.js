@@ -147,6 +147,47 @@ function durationHours(service) {
   return Number.isFinite(diff) && diff > 0 ? diff : 0;
 }
 
+function uniqueMobiles(service) {
+  const byName = new Map();
+  (service.mobiles || []).forEach(item => {
+    const name = (item.name || "").trim();
+    if (!name) return;
+    if (!byName.has(name)) byName.set(name, { name, driver: item.driver || "" });
+    else if (!byName.get(name).driver && item.driver) byName.get(name).driver = item.driver;
+  });
+  return [...byName.values()];
+}
+
+function activeCrew(service) {
+  const byPerson = new Map();
+  (service.crew || []).forEach(item => {
+    if (item.role !== "D" && item.role !== "CH") return;
+    const person = (item.person || "").trim();
+    if (!person || byPerson.has(person)) return;
+    byPerson.set(person, { person, role: item.role });
+  });
+  return [...byPerson.values()];
+}
+
+function rolePriority(role) {
+  if (role === "CH") return 4;
+  if (role === "D") return 3;
+  if (role === "R") return 2;
+  if (role === "G/P") return 1;
+  return 0;
+}
+
+function rosterRoleMap(service) {
+  const roles = new Map();
+  (service.crew || []).forEach(item => {
+    const person = (item.person || "").trim();
+    if (!person) return;
+    const current = roles.get(person) || "";
+    if (rolePriority(item.role) > rolePriority(current)) roles.set(person, item.role);
+  });
+  return roles;
+}
+
 function generateId(acta) {
   const clean = (acta || "parte").replace(/[^\w-]+/g, "-");
   return `${clean}-${Date.now()}`;
@@ -653,12 +694,12 @@ function renderMetrics(services) {
   renderPeriodText();
   const total = filtered.length;
   const hours = filtered.reduce((sum, service) => sum + durationHours(service), 0);
-  const crewTotal = filtered.reduce((sum, service) => sum + service.crew.length, 0);
-  const uniqueMobiles = new Set(filtered.flatMap(service => service.mobiles.map(m => m.name).filter(Boolean)));
+  const crewTotal = filtered.reduce((sum, service) => sum + activeCrew(service).length, 0);
+  const mobileNames = new Set(filtered.flatMap(service => uniqueMobiles(service).map(m => m.name)));
   $("#mTotal").textContent = total;
   $("#mHours").textContent = hours.toFixed(1);
   $("#mCrew").textContent = total ? (crewTotal / total).toFixed(1) : "0";
-  $("#mMobiles").textContent = uniqueMobiles.size;
+  $("#mMobiles").textContent = mobileNames.size;
   renderCurve(filtered);
   renderBars("#typeMetrics", countBy(filtered, s => s.codigo || "Sin codigo"));
   renderPie("#typePie", countBy(filtered, s => s.codigo || "Sin codigo"));
@@ -704,7 +745,7 @@ function mobileHours(services) {
   const totals = {};
   services.forEach(service => {
     const hours = durationHours(service);
-    service.mobiles.forEach(mobile => {
+    uniqueMobiles(service).forEach(mobile => {
       if (!mobile.name) return;
       totals[mobile.name] = (totals[mobile.name] || 0) + hours;
     });
@@ -715,7 +756,7 @@ function mobileHours(services) {
 function mobileKm(services) {
   const totals = {};
   services.forEach(service => {
-    service.mobiles.forEach(mobile => {
+    uniqueMobiles(service).forEach(mobile => {
       if (!mobile.name) return;
       totals[mobile.name] = (totals[mobile.name] || 0) + Number(service.distancia || 0);
     });
@@ -756,8 +797,28 @@ function renderCurve(services) {
   });
   types.forEach((type, index) => typeColors[type] ||= defaultTypeColors[index % defaultTypeColors.length]);
   renderTypeColorControls(types);
+  const yStep = Math.max(1, Math.ceil(max / 6));
+  const yTicks = [];
+  for (let value = 0; value <= max; value += yStep) yTicks.push(value);
+  if (!yTicks.includes(max)) yTicks.push(max);
+  const xLabelStep = Math.max(1, Math.ceil(dates.length / 8));
   const x = index => dates.length === 1 ? width / 2 : pad + index * ((width - pad * 2) / (dates.length - 1));
   const y = value => height - pad - (value / max) * (height - pad * 2);
+  const yAxisLabels = yTicks.map(value => `
+    <g>
+      <line x1="${pad - 5}" y1="${y(value)}" x2="${width - pad}" y2="${y(value)}" stroke="#e1e6eb" stroke-width="1"/>
+      <text x="${pad - 10}" y="${y(value) + 4}" text-anchor="end" font-size="12" fill="#4d5864">${value}</text>
+    </g>
+  `).join("");
+  const xAxisLabels = dates.map((date, index) => {
+    if (index % xLabelStep !== 0 && index !== dates.length - 1) return "";
+    return `
+      <g>
+        <line x1="${x(index)}" y1="${height - pad}" x2="${x(index)}" y2="${height - pad + 5}" stroke="#9aa4af"/>
+        <text x="${x(index)}" y="${height - 8}" text-anchor="middle" font-size="11" fill="#4d5864">${escapeHtml(formatChartDate(date))}</text>
+      </g>
+    `;
+  }).join("");
   const paths = types.map((type, typeIndex) => {
     const points = byTypeDate[type].map((value, index) => `${x(index)},${y(value)}`).join(" ");
     const dots = byTypeDate[type].map((value, index) => `<circle cx="${x(index)}" cy="${y(value)}" r="4" fill="${typeColors[type]}"></circle>`).join("");
@@ -766,12 +827,19 @@ function renderCurve(services) {
   const legend = types.map(type => `<span><i style="background:${typeColors[type]}"></i>${escapeHtml(type)}</span>`).join("");
   $("#serviceCurve").innerHTML = `
     <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Curva de servicios por fecha y tipo">
+      ${yAxisLabels}
       <line x1="${pad}" y1="${height - pad}" x2="${width - pad}" y2="${height - pad}" stroke="#9aa4af"/>
       <line x1="${pad}" y1="${pad}" x2="${pad}" y2="${height - pad}" stroke="#9aa4af"/>
+      ${xAxisLabels}
       ${paths}
     </svg>
     <div class="chart-legend">${legend}</div>
   `;
+}
+
+function formatChartDate(date) {
+  const [year, month, day] = String(date).split("-");
+  return day && month ? `${day}/${month}` : date;
 }
 
 function renderTypeColorControls(types) {
@@ -860,14 +928,13 @@ function personTotals(services) {
   const totals = {};
   services.forEach(service => {
     const hours = durationHours(service);
-    service.crew.forEach(item => {
-      if (!item.person) return;
-      totals[item.person] ||= { duty: 0, standby: 0, paid: 0, other: 0, hours: 0 };
-      if (item.role === "D" || item.role === "CH") totals[item.person].duty += 1;
-      else if (item.role === "R") totals[item.person].standby += 1;
-      else if (item.role === "G/P") totals[item.person].paid += 1;
-      else totals[item.person].other += 1;
-      totals[item.person].hours += hours;
+    rosterRoleMap(service).forEach((role, person) => {
+      totals[person] ||= { duty: 0, standby: 0, paid: 0, other: 0, hours: 0 };
+      if (role === "D" || role === "CH") totals[person].duty += 1;
+      else if (role === "R") totals[person].standby += 1;
+      else if (role === "G/P") totals[person].paid += 1;
+      else totals[person].other += 1;
+      if (role === "D" || role === "CH") totals[person].hours += hours;
     });
   });
   return totals;
@@ -882,7 +949,6 @@ function renderPersonProfile(services) {
   const personServices = services
     .filter(service => service.crew.some(item => item.person === selectedPerson))
     .sort((a, b) => (b.fechaSalida || "").localeCompare(a.fechaSalida || ""));
-  const hours = personServices.reduce((sum, service) => sum + durationHours(service), 0);
   const total = personTotals(services)[selectedPerson] || { duty: 0, standby: 0, paid: 0, other: 0 };
   target.innerHTML = `
     <div class="profile-head">
@@ -890,7 +956,7 @@ function renderPersonProfile(services) {
       <span>D/CH: ${total.duty}</span>
       <span>R: ${total.standby}</span>
       <span>G/P: ${total.paid}</span>
-      <span>${hours.toFixed(1)} hs</span>
+      <span>${total.hours.toFixed(1)} hs</span>
     </div>
     <div class="split">
       <div class="panel inner-panel"><h3>Tipos de servicio</h3><div id="personTypePie"></div></div>
@@ -902,14 +968,16 @@ function renderPersonProfile(services) {
 
 function makePrintHtml(service, incomplete = false, mode = "all") {
   const hours = durationHours(service);
-  const roleByPerson = new Map((service.crew || []).map(item => [item.person, item.role]));
+  const roleByPerson = rosterRoleMap(service);
+  const printMobiles = uniqueMobiles(service);
+  const printCrew = activeCrew(service);
   const blocks = [
     ["Codigo", service.codigo], ["Tipo", service.tipo], ["Parte de servicio", service.acta],
     ["Denunciante", service.denunciante || "N/A"], ["Telefono", service.telefono || "N/A"], ["Ubicacion", service.ubicacion],
-    ["Cantidad moviles", service.mobiles.length], ["A cargo", service.aCargo], ["Operador/a", service.operador],
+    ["Cantidad moviles", printMobiles.length], ["A cargo", service.aCargo], ["Operador/a", service.operador],
     ["Fecha llamada", service.fechaLlamada], ["Fecha salida", service.fechaSalida], ["Fecha regreso", service.fechaRegreso],
     ["Hora llamada", service.horaLlamada], ["Hora salida", service.horaSalida], ["Hora regreso", service.horaRegreso],
-    ["Distancia", service.distancia ? `${service.distancia} km` : ""], ["Duracion", hours ? `${hours.toFixed(1)} hs` : ""], ["Dotacion", service.crew.length]
+    ["Distancia", service.distancia ? `${service.distancia} km` : ""], ["Duracion", hours ? `${hours.toFixed(1)} hs` : ""], ["Dotacion", printCrew.length]
   ];
   const allPeople = people();
   const leftCount = Math.min(47, Math.ceil(allPeople.length / 2));
@@ -929,7 +997,7 @@ function makePrintHtml(service, incomplete = false, mode = "all") {
       </tr>
     `;
   }).join("");
-  const mobileRows = service.mobiles.map(item => `<tr><td>${escapeHtml(item.name)}</td><td>${escapeHtml(item.driver)}</td></tr>`).join("");
+  const mobileRows = printMobiles.map(item => `<tr><td>${escapeHtml(item.name)}</td><td>${escapeHtml(item.driver)}</td></tr>`).join("");
   const frontHtml = `
     <section class="print-sheet ${incomplete ? "print-incomplete-sheet" : ""}">
       <div class="print-title">
