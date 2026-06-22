@@ -89,6 +89,7 @@ const seed = {
 const PERSONAL_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1fkfiSwjaFuysUVHaTTaHziDee0Atmrpo-cbH_iqrCuw/gviz/tq?tqx=out:csv&sheet=PERSONAL";
 const DEFAULT_APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx9TtL5TXjuNKsJbBALfVpPFysSsZZu_o8OMbYZbPy3BA94hsG3eomJNNH0GmRsZl7xvg/exec";
 let editingId = null;
+let editingReturnStatus = "";
 let selectedPendingId = null;
 let activeLoadSlot = 0;
 let loadSlotSequence = 1;
@@ -244,6 +245,7 @@ function addMobileRow(data = {}) {
 
 function resetForm(clearDraft = true) {
   editingId = null;
+  editingReturnStatus = "";
   $("#serviceForm").reset();
   $('[name="parteAnio"]').value = "26";
   $('[name="fechaLlamada"]').value = today();
@@ -352,6 +354,8 @@ function collectForm(status = "pending") {
 
 async function saveService(status = "pending") {
   const current = collectForm(status);
+  const forcedStatus = editingReturnStatus;
+  if (forcedStatus) current.status = forcedStatus;
   const duplicate = remoteServices.find(item => item.acta && item.acta === current.acta && item.id !== current.id);
   const replacingDuplicate = !!duplicate;
   if (duplicate) {
@@ -364,17 +368,22 @@ async function saveService(status = "pending") {
   const service = {
     ...previous,
     ...current,
-    status: !replacingDuplicate && previous?.status === "complete" ? "complete" : current.status,
+    status: !forcedStatus && !replacingDuplicate && previous?.status === "complete" ? "complete" : current.status,
     downloadedAt: previous?.downloadedAt || current.downloadedAt,
     createdAt: previous?.createdAt || current.createdAt
   };
+  if (forcedStatus === "ready_print") {
+    service.printedFrontAt = "";
+    service.printedCrewAt = "";
+  }
   remoteServices = upsertLocalService(service);
   await sendToAppsScript(service);
+  editingReturnStatus = "";
   resetForm();
   renderLoadTabs();
   await loadRemoteServices();
   showToast(`Parte ${service.acta || "S/N"} guardado correctamente.`);
-  showView("pendientes");
+  showView(service.status === "ready_print" ? "imprimir" : "pendientes");
 }
 
 async function sendToAppsScript(service, options = {}) {
@@ -590,6 +599,7 @@ function renderPrintCard(service) {
 
 function renderHistoryCard(service) {
   return renderServiceCard(service, `
+    <button class="primary" data-action="edit-history" data-id="${service.id}">Editar</button>
     <button class="ghost" data-action="print-front" data-id="${service.id}">Frente</button>
     <button class="ghost" data-action="print-crew" data-id="${service.id}">Dotacion</button>
   `);
@@ -1095,10 +1105,11 @@ async function markPrinted(id, kind) {
   await loadRemoteServices();
 }
 
-async function editService(id) {
+async function editService(id, returnStatus = "") {
   const service = remoteServices.find(item => item.id === id);
   if (!service) return;
   editingId = id;
+  editingReturnStatus = returnStatus;
   Object.entries(service).forEach(([key, value]) => {
     const field = $(`[name="${key}"]`);
     if (field && typeof value !== "object") field.value = value || "";
@@ -1202,6 +1213,7 @@ function bindActions() {
     }
     if (action === "complete") await completeService(id);
     if (action === "edit") await editService(id);
+    if (action === "edit-history") await editService(id, "ready_print");
   });
   $$(".tab").forEach(tab => tab.addEventListener("click", () => showView(tab.dataset.view)));
   document.addEventListener("click", event => {

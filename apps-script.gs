@@ -122,7 +122,8 @@ function saveParte(parte, options) {
       editable_error: editable.error || '',
       editable_folder_id: editable.folderId || '',
       editable_folder_url: editable.folderUrl || '',
-      editable_fallback_usado: editable.fallbackUsed || false
+      editable_fallback_usado: editable.fallbackUsed || false,
+      editable_version: editable.version || ''
     });
   }
   rebuildMetricas();
@@ -308,9 +309,9 @@ function rebuildMetricas() {
 function saveEditableCopy(parteServicio, parte) {
   const folderInfo = getEditableFolder();
   const folder = folderInfo.folder;
-  const name = ('Parte ' + parteServicio).replace(/[\\/:*?"<>|]/g, '-');
-  const existing = folder.getFilesByName(name);
-  while (existing.hasNext()) existing.next().setTrashed(true);
+  const baseName = ('Parte ' + parteServicio).replace(/[\\/:*?"<>|]/g, '-');
+  const versionInfo = getNextEditableVersion(folder, baseName);
+  const name = versionInfo.name;
   const doc = DocumentApp.create(name);
   const body = doc.getBody();
   body.clear();
@@ -339,8 +340,30 @@ function saveEditableCopy(parteServicio, parte) {
     savedAt: new Date().toISOString(),
     folderId: folder.getId(),
     folderUrl: folder.getUrl(),
+    version: versionInfo.version,
     fallbackUsed: folderInfo.fallbackUsed,
     originalError: folderInfo.originalError || ''
+  };
+}
+
+function getNextEditableVersion(folder, baseName) {
+  let maxVersion = 0;
+  const files = folder.getFiles();
+  while (files.hasNext()) {
+    const file = files.next();
+    const name = file.getName();
+    if (name === baseName) {
+      maxVersion = Math.max(maxVersion, 1);
+      continue;
+    }
+    const escaped = baseName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = name.match(new RegExp('^' + escaped + ' - version (\\d+)$', 'i'));
+    if (match) maxVersion = Math.max(maxVersion, Number(match[1]));
+  }
+  const version = maxVersion + 1;
+  return {
+    version: version,
+    name: version === 1 ? baseName : baseName + ' - version ' + version
   };
 }
 
