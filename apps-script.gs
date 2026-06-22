@@ -1,6 +1,8 @@
 const CONFIG = {
   spreadsheetId: '1fkfiSwjaFuysUVHaTTaHziDee0Atmrpo-cbH_iqrCuw',
-  driveFolderId: '1adVL7PQsi6HJO37TFl7PVtdaj5sygpXI',
+  driveFolderId: '1-IkiEXQSUdiXDnlfYxGPTSOPr8_sWjhB',
+  fallbackFolderName: 'SBVP_PARTES_EDITABLES',
+  createFallbackFolder: true,
   sheets: {
     servicios: 'SERVICIOS',
     dotacion: 'SERVICIO_DOTACION',
@@ -27,6 +29,7 @@ function doGet(e) {
   try {
     const action = (e && e.parameter && e.parameter.action) || 'data';
     if (action === 'data') return outputResponse(getData(), e);
+    if (action === 'diagnosticoDrive') return outputResponse(diagnosticoDrive(), e);
     if (action === 'metricas') return outputResponse(rebuildMetricas(), e);
     throw new Error('Accion no soportada: ' + action);
   } catch (error) {
@@ -116,7 +119,10 @@ function saveParte(parte, options) {
       editable_id: editable.id || '',
       editable_url: editable.url || '',
       editable_guardado_en: editable.savedAt || '',
-      editable_error: editable.error || ''
+      editable_error: editable.error || '',
+      editable_folder_id: editable.folderId || '',
+      editable_folder_url: editable.folderUrl || '',
+      editable_fallback_usado: editable.fallbackUsed || false
     });
   }
   rebuildMetricas();
@@ -148,6 +154,36 @@ function probarCarpetaDrive() {
   });
   Logger.log(result.url);
   return result;
+}
+
+function autorizarServiciosGoogle() {
+  const ss = SpreadsheetApp.openById(CONFIG.spreadsheetId);
+  const folder = getEditableFolder().folder;
+  const doc = DocumentApp.create('SBVP_AUTORIZACION_TEMPORAL');
+  doc.getBody().appendParagraph('Archivo temporal para autorizar permisos de Google Docs y Drive.');
+  doc.saveAndClose();
+  const file = DriveApp.getFileById(doc.getId());
+  file.moveTo(folder);
+  file.setTrashed(true);
+  return {
+    ok: true,
+    spreadsheetName: ss.getName(),
+    folderId: folder.getId(),
+    folderName: folder.getName()
+  };
+}
+
+function diagnosticoDrive() {
+  const folderInfo = getEditableFolder();
+  return {
+    ok: true,
+    targetFolderId: CONFIG.driveFolderId,
+    activeFolderId: folderInfo.folder.getId(),
+    activeFolderName: folderInfo.folder.getName(),
+    activeFolderUrl: folderInfo.folder.getUrl(),
+    fallbackUsed: folderInfo.fallbackUsed,
+    originalError: folderInfo.originalError || ''
+  };
 }
 
 function getData() {
@@ -270,7 +306,8 @@ function rebuildMetricas() {
 }
 
 function saveEditableCopy(parteServicio, parte) {
-  const folder = DriveApp.getFolderById(CONFIG.driveFolderId);
+  const folderInfo = getEditableFolder();
+  const folder = folderInfo.folder;
   const name = ('Parte ' + parteServicio).replace(/[\\/:*?"<>|]/g, '-');
   const existing = folder.getFilesByName(name);
   while (existing.hasNext()) existing.next().setTrashed(true);
@@ -295,7 +332,39 @@ function saveEditableCopy(parteServicio, parte) {
   doc.saveAndClose();
   const file = DriveApp.getFileById(doc.getId());
   file.moveTo(folder);
-  return { ok: true, id: doc.getId(), url: doc.getUrl(), savedAt: new Date().toISOString() };
+  return {
+    ok: true,
+    id: doc.getId(),
+    url: doc.getUrl(),
+    savedAt: new Date().toISOString(),
+    folderId: folder.getId(),
+    folderUrl: folder.getUrl(),
+    fallbackUsed: folderInfo.fallbackUsed,
+    originalError: folderInfo.originalError || ''
+  };
+}
+
+function getEditableFolder() {
+  try {
+    const folder = DriveApp.getFolderById(CONFIG.driveFolderId);
+    folder.getName();
+    return { folder: folder, fallbackUsed: false };
+  } catch (error) {
+    if (!CONFIG.createFallbackFolder) throw error;
+    const folder = getOrCreateFolderByName(CONFIG.fallbackFolderName);
+    logError('getEditableFolder', error, {
+      targetFolderId: CONFIG.driveFolderId,
+      fallbackFolderId: folder.getId(),
+      fallbackFolderUrl: folder.getUrl()
+    });
+    return { folder: folder, fallbackUsed: true, originalError: error.message };
+  }
+}
+
+function getOrCreateFolderByName(name) {
+  const folders = DriveApp.getFoldersByName(name);
+  if (folders.hasNext()) return folders.next();
+  return DriveApp.createFolder(name);
 }
 
 function safeSaveEditableCopy(parteServicio, parte) {
