@@ -929,7 +929,7 @@ function renderPeopleCards(services) {
   if (!selectedPerson && rows.length) selectedPerson = rows[0][0];
   $("#personCards").innerHTML = rows.length ? rows.map(([name, data]) => {
     const active = name === selectedPerson ? " active" : "";
-    return `<button class="profile-card${active}" data-person-profile="${escapeHtml(name)}"><strong>${escapeHtml(name)}</strong><span>D/CH: ${data.duty}</span><span>R: ${data.standby}</span><span>${data.hours.toFixed(1)} hs</span></button>`;
+    return `<button class="profile-card${active}" data-person-profile="${escapeHtml(name)}"><strong>${escapeHtml(name)}</strong><span>D/CH: ${data.d + data.ch}</span><span>R: ${data.r}</span><span>${data.hours.toFixed(1)} hs</span></button>`;
   }).join("") : `<p class="muted">Sin bomberos para esa busqueda.</p>`;
   renderPersonProfile(services);
 }
@@ -939,15 +939,89 @@ function personTotals(services) {
   services.forEach(service => {
     const hours = durationHours(service);
     rosterRoleMap(service).forEach((role, person) => {
-      totals[person] ||= { duty: 0, standby: 0, paid: 0, other: 0, hours: 0 };
-      if (role === "D" || role === "CH") totals[person].duty += 1;
-      else if (role === "R") totals[person].standby += 1;
+      totals[person] ||= { ch: 0, d: 0, r: 0, paid: 0, other: 0, hours: 0 };
+      if (role === "CH") totals[person].ch += 1;
+      else if (role === "D") totals[person].d += 1;
+      else if (role === "R") totals[person].r += 1;
       else if (role === "G/P") totals[person].paid += 1;
       else totals[person].other += 1;
       if (role === "D" || role === "CH") totals[person].hours += hours;
     });
   });
   return totals;
+}
+
+function personMetaMap() {
+  return new Map(people().map(person => [person.name, person]));
+}
+
+function exportPeopleMetrics() {
+  const services = filterServicesByPeriod(remoteServices);
+  const totals = personTotals(services);
+  const metaByName = personMetaMap();
+  const names = new Set([...people().map(person => person.name), ...Object.keys(totals)]);
+  const rows = [...names].sort((a, b) => a.localeCompare(b)).map(name => {
+    const data = totals[name] || { ch: 0, d: 0, r: 0 };
+    const total = data.ch + data.d + data.r;
+    return {
+      bombero: name,
+      legajo: metaByName.get(name)?.legajo || "",
+      ch: data.ch || 0,
+      d: data.d || 0,
+      r: data.r || 0,
+      total
+    };
+  });
+  const from = metricFrom || "inicio";
+  const to = metricTo || today();
+  const tableRows = rows.map(row => `
+    <tr>
+      <td>${escapeHtml(row.bombero)}</td>
+      <td>${escapeHtml(row.legajo)}</td>
+      <td>${row.ch}</td>
+      <td>${row.d}</td>
+      <td>${row.r}</td>
+      <td>${row.total}</td>
+    </tr>
+  `).join("");
+  const html = `
+    <html>
+      <head><meta charset="utf-8"></head>
+      <body>
+        <table>
+          <tr><th colspan="6">Metricas por bombero</th></tr>
+          <tr><td colspan="6">Periodo: ${escapeHtml(from)} a ${escapeHtml(to)}</td></tr>
+          <tr><td colspan="6"></td></tr>
+          <tr>
+            <th>Bombero</th>
+            <th>Legajo</th>
+            <th>CH</th>
+            <th>D</th>
+            <th>R</th>
+            <th>Total CH+D+R</th>
+          </tr>
+          ${tableRows}
+        </table>
+      </body>
+    </html>
+  `;
+  downloadBlob(`metricas_bomberos_${safeFilePart(from)}_${safeFilePart(to)}.xls`, html, "application/vnd.ms-excel;charset=utf-8");
+}
+
+function downloadBlob(filename, content, type) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function safeFilePart(value) {
+  return String(value || "").replace(/[^\w-]+/g, "-");
 }
 
 function renderPersonProfile(services) {
@@ -959,12 +1033,13 @@ function renderPersonProfile(services) {
   const personServices = services
     .filter(service => service.crew.some(item => item.person === selectedPerson))
     .sort((a, b) => (b.fechaSalida || "").localeCompare(a.fechaSalida || ""));
-  const total = personTotals(services)[selectedPerson] || { duty: 0, standby: 0, paid: 0, other: 0 };
+  const total = personTotals(services)[selectedPerson] || { ch: 0, d: 0, r: 0, paid: 0, other: 0, hours: 0 };
   target.innerHTML = `
     <div class="profile-head">
       <h3>${escapeHtml(selectedPerson)}</h3>
-      <span>D/CH: ${total.duty}</span>
-      <span>R: ${total.standby}</span>
+      <span>CH: ${total.ch}</span>
+      <span>D: ${total.d}</span>
+      <span>R: ${total.r}</span>
       <span>G/P: ${total.paid}</span>
       <span>${total.hours.toFixed(1)} hs</span>
     </div>
@@ -1160,6 +1235,7 @@ function parsePeopleRows(rows) {
   const lastNameIndex = hasHeader ? header.findIndex(cell => cell === "apellido" || cell.includes("apellido")) : -1;
   const firstNameIndex = hasHeader ? header.findIndex(cell => cell === "nombre" || cell.includes("nombre")) : -1;
   const gradeIndex = hasHeader ? header.findIndex(cell => cell.includes("grado") || cell.includes("jerarquia")) : 1;
+  const legajoIndex = hasHeader ? header.findIndex(cell => cell.includes("legajo") || cell === "lp" || cell.includes("nro")) : -1;
   const dataRows = hasHeader ? rows.slice(1) : rows;
   return dataRows.map(row => {
     const fullName = fullNameIndex >= 0 ? String(row[fullNameIndex] || "").trim() : "";
@@ -1167,7 +1243,11 @@ function parsePeopleRows(rows) {
     const firstName = firstNameIndex >= 0 && firstNameIndex !== lastNameIndex ? String(row[firstNameIndex] || "").trim() : "";
     const fallbackName = String(row[0] || "").trim();
     const name = fullName || (lastName && firstName ? `${lastName}, ${firstName}` : lastName || fallbackName);
-    return { name, grade: String(row[gradeIndex] || "").trim() };
+    return {
+      name,
+      grade: String(row[gradeIndex] || "").trim(),
+      legajo: legajoIndex >= 0 ? String(row[legajoIndex] || "").trim() : ""
+    };
   }).filter(item => item.name && item.name.toLowerCase() !== "nombre");
 }
 
@@ -1277,6 +1357,7 @@ function bindActions() {
     selectedPerson = "";
     renderMetrics(remoteServices);
   });
+  $("#exportPeopleMetrics").addEventListener("click", exportPeopleMetrics);
   $("#serviceForm").addEventListener("input", saveCurrentDraft);
   $("#serviceForm").addEventListener("change", saveCurrentDraft);
   $("#serviceForm").addEventListener("submit", event => {
