@@ -1235,7 +1235,7 @@ function parsePeopleRows(rows) {
   const lastNameIndex = hasHeader ? header.findIndex(cell => cell === "apellido" || cell.includes("apellido")) : -1;
   const firstNameIndex = hasHeader ? header.findIndex(cell => cell === "nombre" || cell.includes("nombre")) : -1;
   const gradeIndex = hasHeader ? header.findIndex(cell => cell.includes("grado") || cell.includes("jerarquia")) : 1;
-  const legajoIndex = hasHeader ? header.findIndex(cell => cell.includes("legajo") || cell === "lp" || cell.includes("nro")) : -1;
+  const legajoIndex = hasHeader ? header.findIndex(cell => cell === "persona_id" || cell.includes("legajo") || cell === "lp" || cell.includes("nro")) : -1;
   const dataRows = hasHeader ? rows.slice(1) : rows;
   return dataRows.map(row => {
     const fullName = fullNameIndex >= 0 ? String(row[fullNameIndex] || "").trim() : "";
