@@ -51,3 +51,33 @@ Las copias editables se guardan en:
 `https://drive.google.com/drive/folders/1-IkiEXQSUdiXDnlfYxGPTSOPr8_sWjhB`
 
 Si la cuenta que ejecuta el Apps Script no tiene permisos sobre esa carpeta, el script usa una carpeta fallback llamada `SBVP_PARTES_EDITABLES` y deja el detalle en la hoja `ERRORES`.
+
+## Control de firmas
+
+Cuando se genera un parte, Apps Script crea o actualiza una fila en la hoja `CONTROL_FIRMAS`.
+Cuando se imprime el frente, completo o incompleto, esa misma fila pasa de `pendiente_impresion` a `frente_impreso`.
+
+Columnas principales:
+
+- `control_id`
+- `servicio_id`
+- `parte_servicio`
+- `fecha_servicio`
+- `fecha_generacion`
+- `fecha_impresion_frente`
+- `tipo_ultima_impresion`
+- `estado_impresion`
+- `persona_a_cargo`
+- `operador`
+- `firma_persona_a_cargo`
+- `firma_operador`
+- `controlado`
+- `controlado_en`
+- `controlado_por`
+- `observaciones`
+
+El futuro panel de control debe leer `action=data`, usar `controlFirmas`, mostrar pendientes no controlados y actualizar firmas con `action=actualizarControlFirma`.
+Estados esperados:
+
+- `pendiente_impresion`: falta imprimir y firmar.
+- `frente_impreso`: falta controlar firmas o marcarlo controlado.

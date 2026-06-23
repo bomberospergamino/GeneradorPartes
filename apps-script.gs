@@ -8,6 +8,7 @@ const CONFIG = {
     dotacion: 'SERVICIO_DOTACION',
     moviles: 'SERVICIO_MOVILES',
     metricas: 'METRICAS',
+    controlFirmas: 'CONTROL_FIRMAS',
     errores: 'ERRORES'
   }
 };
@@ -18,6 +19,7 @@ function doPost(e) {
     const action = payload.action || 'guardarParte';
     if (action === 'guardarParte') return outputResponse(saveParte(payload.parte, payload.options || {}), e);
     if (action === 'guardarEditable') return outputResponse(saveEditableOnly(payload.parte), e);
+    if (action === 'actualizarControlFirma') return outputResponse(updateSignatureControl(payload.control), e);
     if (action === 'metricas') return outputResponse(rebuildMetricas(), e);
     throw new Error('Accion no soportada: ' + action);
   } catch (error) {
@@ -126,8 +128,52 @@ function saveParte(parte, options) {
       editable_version: editable.version || ''
     });
   }
+  upsertSignatureControl(ss, servicioId, parteServicio, parte, options || {});
   rebuildMetricas();
   return { ok: true, servicio_id: servicioId };
+}
+
+function upsertSignatureControl(ss, servicioId, parteServicio, parte, options) {
+  const existing = findControlByServiceId(ss, servicioId);
+  const printedAt = parte.printedFrontAt || '';
+  const patch = {
+    control_id: existing.control_id || Utilities.getUuid(),
+    servicio_id: servicioId,
+    parte_servicio: parteServicio,
+    fecha_servicio: parte.fechaSalida || '',
+    fecha_generacion: parte.createdAt || '',
+    fecha_impresion_frente: printedAt,
+    tipo_ultima_impresion: options.printKind || existing.tipo_ultima_impresion || '',
+    estado_impresion: printedAt ? 'frente_impreso' : 'pendiente_impresion',
+    persona_a_cargo: parte.aCargo || '',
+    operador: parte.operador || '',
+    firma_persona_a_cargo: existing.firma_persona_a_cargo || false,
+    firma_operador: existing.firma_operador || false,
+    controlado: existing.controlado || false,
+    controlado_en: existing.controlado_en || '',
+    controlado_por: existing.controlado_por || '',
+    observaciones: existing.observaciones || ''
+  };
+  upsertObject(ss, CONFIG.sheets.controlFirmas, 'control_id', patch.control_id, patch);
+}
+
+function findControlByServiceId(ss, servicioId) {
+  const rows = readObjects(ss, CONFIG.sheets.controlFirmas);
+  return rows.find(row => String(row.servicio_id) === String(servicioId)) || {};
+}
+
+function updateSignatureControl(control) {
+  if (!control || !control.control_id) throw new Error('Falta control_id');
+  const ss = SpreadsheetApp.openById(CONFIG.spreadsheetId);
+  const patch = {
+    control_id: control.control_id
+  };
+  ['firma_persona_a_cargo', 'firma_operador', 'controlado', 'controlado_en', 'controlado_por', 'observaciones'].forEach(key => {
+    if (Object.prototype.hasOwnProperty.call(control, key)) patch[key] = control[key];
+  });
+  if (patch.controlado === true && !patch.controlado_en) patch.controlado_en = new Date();
+  upsertObject(ss, CONFIG.sheets.controlFirmas, 'control_id', control.control_id, patch);
+  return { ok: true, control_id: control.control_id };
 }
 
 function saveEditableOnly(parte) {
@@ -193,7 +239,8 @@ function getData() {
     ok: true,
     servicios: readObjects(ss, CONFIG.sheets.servicios),
     dotacion: readObjects(ss, CONFIG.sheets.dotacion),
-    moviles: readObjects(ss, CONFIG.sheets.moviles)
+    moviles: readObjects(ss, CONFIG.sheets.moviles),
+    controlFirmas: readObjects(ss, CONFIG.sheets.controlFirmas)
   };
 }
 

@@ -582,7 +582,8 @@ function renderServiceCard(service, actions = "") {
 function renderPendingCard(service) {
   const card = renderServiceCard(service, `
     <button class="primary" data-action="open-complete" data-id="${service.id}">Seleccionar</button>
-    <button class="secondary" data-action="print-incomplete" data-id="${service.id}">Imprimir sin completar</button>
+    <button class="secondary" data-action="print-incomplete-front" data-id="${service.id}">Imprimir frente</button>
+    <button class="secondary" data-action="print-incomplete-crew" data-id="${service.id}">Imprimir dorso</button>
     <button class="ghost" data-action="edit" data-id="${service.id}">Editar</button>
   `);
   return selectedPendingId && selectedPendingId !== service.id ? card.replace('class="service-item"', 'class="service-item hidden-while-zoom"') : card;
@@ -1176,7 +1177,7 @@ async function markPrinted(id, kind) {
   if (service.printedFrontAt && service.printedCrewAt) service.status = "complete";
   service.updatedAt = new Date().toISOString();
   remoteServices = upsertLocalService(service);
-  await sendToAppsScript(service, { saveEditable: true });
+  await sendToAppsScript(service, { saveEditable: true, printKind: kind === "front" ? "frente_completo" : "dorso_completo" });
   await loadRemoteServices();
 }
 
@@ -1287,9 +1288,19 @@ function bindActions() {
       await printService(id, false, "crew");
       await markPrinted(id, "crew");
     }
-    if (action === "print-incomplete") {
-      const service = await printService(id, true, "all");
-      if (service) await sendToAppsScript(service, { saveEditable: true });
+    if (action === "print-incomplete-front") {
+      const service = await printService(id, true, "front");
+      if (service) {
+        service.printedFrontAt = new Date().toISOString();
+        service.updatedAt = new Date().toISOString();
+        remoteServices = upsertLocalService(service);
+        await sendToAppsScript(service, { saveEditable: true, printKind: "frente_incompleto" });
+        await loadRemoteServices();
+      }
+    }
+    if (action === "print-incomplete-crew") {
+      const service = await printService(id, true, "crew");
+      if (service) await sendToAppsScript(service, { saveEditable: true, printKind: "dorso_incompleto" });
     }
     if (action === "complete") await completeService(id);
     if (action === "edit") await editService(id);
