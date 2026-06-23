@@ -377,37 +377,41 @@ async function saveService(status = "pending") {
     service.printedCrewAt = "";
   }
   remoteServices = upsertLocalService(service);
-  await sendToAppsScript(service);
-  editingReturnStatus = "";
-  resetForm();
-  renderLoadTabs();
-  await loadRemoteServices();
-  showToast(`Parte ${service.acta || "S/N"} guardado correctamente.`);
-  showView(service.status === "ready_print" ? "imprimir" : "pendientes");
+  showToast("Se está guardando, por favor espere.", { persistent: true });
+  try {
+    await sendToAppsScript(service);
+    editingReturnStatus = "";
+    resetForm();
+    renderLoadTabs();
+    await loadRemoteServices();
+    showToast(`Parte ${service.acta || "S/N"} guardado correctamente. Hoy también vas a tener un lindo día! 💜`, { duration: 5200 });
+    showView(service.status === "ready_print" ? "imprimir" : "pendientes");
+  } catch (error) {
+    showToast("No se pudo guardar el parte. Revisá la conexión e intentá nuevamente.", { duration: 5200 });
+    throw error;
+  }
 }
 
 async function sendToAppsScript(service, options = {}) {
   const url = DEFAULT_APPS_SCRIPT_URL;
   if (!url) return;
-  try {
-    await fetch(url, {
-      method: "POST",
-      mode: "no-cors",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({ action: "guardarParte", parte: service, options })
-    });
-  } catch (error) {
-    console.warn("No se pudo enviar a Apps Script", error);
-  }
+  await fetch(url, {
+    method: "POST",
+    mode: "no-cors",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action: "guardarParte", parte: service, options })
+  });
 }
 
-function showToast(message) {
+function showToast(message, options = {}) {
   const toast = $("#toast");
   if (!toast) return alert(message);
   toast.textContent = message;
   toast.classList.add("show");
   clearTimeout(showToast.timeout);
-  showToast.timeout = setTimeout(() => toast.classList.remove("show"), 3200);
+  if (!options.persistent) {
+    showToast.timeout = setTimeout(() => toast.classList.remove("show"), options.duration || 3200);
+  }
 }
 
 function upsertLocalService(service) {
@@ -788,9 +792,9 @@ function renderBars(selector, data, suffix = "") {
 }
 
 function renderCurve(services) {
-  const dates = [...new Set(services.map(s => s.fechaSalida || s.createdAt?.slice(0, 10)).filter(Boolean))].sort();
+  const periods = [...new Set(services.map(servicePeriod).filter(Boolean))].sort();
   const types = [...new Set(services.map(s => s.codigo || "Sin codigo"))].sort();
-  if (!dates.length || !types.length) {
+  if (!periods.length || !types.length) {
     $("#serviceCurve").innerHTML = `<p class="muted">Sin datos para el periodo.</p>`;
     return;
   }
@@ -800,8 +804,8 @@ function renderCurve(services) {
   const byTypeDate = {};
   let max = 1;
   types.forEach(type => {
-    byTypeDate[type] = dates.map(date => {
-      const count = services.filter(s => (s.codigo || "Sin codigo") === type && (s.fechaSalida || s.createdAt?.slice(0, 10)) === date).length;
+    byTypeDate[type] = periods.map(period => {
+      const count = services.filter(s => (s.codigo || "Sin codigo") === type && servicePeriod(s) === period).length;
       max = Math.max(max, count);
       return count;
     });
@@ -812,8 +816,8 @@ function renderCurve(services) {
   const yTicks = [];
   for (let value = 0; value <= max; value += yStep) yTicks.push(value);
   if (!yTicks.includes(max)) yTicks.push(max);
-  const xLabelStep = Math.max(1, Math.ceil(dates.length / 8));
-  const x = index => dates.length === 1 ? width / 2 : pad + index * ((width - pad * 2) / (dates.length - 1));
+  const xLabelStep = Math.max(1, Math.ceil(periods.length / 8));
+  const x = index => periods.length === 1 ? width / 2 : pad + index * ((width - pad * 2) / (periods.length - 1));
   const y = value => height - pad - (value / max) * (height - pad * 2);
   const yAxisLabels = yTicks.map(value => `
     <g>
@@ -821,12 +825,12 @@ function renderCurve(services) {
       <text x="${pad - 10}" y="${y(value) + 4}" text-anchor="end" font-size="12" fill="#4d5864">${value}</text>
     </g>
   `).join("");
-  const xAxisLabels = dates.map((date, index) => {
-    if (index % xLabelStep !== 0 && index !== dates.length - 1) return "";
+  const xAxisLabels = periods.map((period, index) => {
+    if (index % xLabelStep !== 0 && index !== periods.length - 1) return "";
     return `
       <g>
         <line x1="${x(index)}" y1="${height - pad}" x2="${x(index)}" y2="${height - pad + 5}" stroke="#9aa4af"/>
-        <text x="${x(index)}" y="${height - 8}" text-anchor="middle" font-size="11" fill="#4d5864">${escapeHtml(formatChartDate(date))}</text>
+        <text x="${x(index)}" y="${height - 8}" text-anchor="middle" font-size="11" fill="#4d5864">${escapeHtml(formatChartPeriod(period))}</text>
       </g>
     `;
   }).join("");
@@ -848,9 +852,14 @@ function renderCurve(services) {
   `;
 }
 
-function formatChartDate(date) {
-  const [year, month, day] = String(date).split("-");
-  return day && month ? `${day}/${month}` : date;
+function servicePeriod(service) {
+  const value = service.fechaSalida || service.createdAt?.slice(0, 10) || "";
+  return value ? value.slice(0, 7) : "";
+}
+
+function formatChartPeriod(period) {
+  const [year, month] = String(period).split("-");
+  return month && year ? `${month}/${year.slice(-2)}` : period;
 }
 
 function renderTypeColorControls(types) {
