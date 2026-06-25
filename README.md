@@ -1,51 +1,83 @@
-# SBVP Control Diario
+# Generador de partes de servicio SBVP
 
-Aplicacion web estatica para realizar el control diario de guardia:
+Aplicacion estatica para generar, completar, imprimir y consultar partes de servicio.
 
-- Limpieza de lugares.
-- Limpieza de moviles.
-- Asistencia de personas.
-- Control de partes sin firmar desde la hoja `CONTROL_FIRMAS`.
-- Generacion de PDF al finalizar.
-- Compartir desde el navegador si el dispositivo soporta Web Share.
-- Historico local con retencion automatica de 60 dias.
+## Archivos para GitHub Pages
 
-## Datos
+Subir estos archivos al repositorio:
 
-La app lee el personal y los partes desde esta planilla:
+- `index.html`
+- `styles.css`
+- `app.js`
+- `logo-sbvp.png`
 
-`https://docs.google.com/spreadsheets/d/1fkfiSwjaFuysUVHaTTaHziDee0Atmrpo-cbH_iqrCuw`
+GitHub Pages puede servir la app directamente desde la rama principal o desde `/docs`.
 
-GIDs usados:
+## Apps Script
 
-- Personal: `0`
-- CONTROL_FIRMAS: `1632175139`
+El frontend apunta a:
 
-## Publicacion en GitHub Pages
+`https://script.google.com/macros/s/AKfycbx9TtL5TXjuNKsJbBALfVpPFysSsZZu_o8OMbYZbPy3BA94hsG3eomJNNH0GmRsZl7xvg/exec`
 
-1. Crear un repositorio en GitHub.
-2. Subir estos archivos a la rama principal.
-3. En GitHub, ir a `Settings > Pages`.
-4. Elegir la rama principal y carpeta raiz.
+En Apps Script copiar:
 
-## Nota sobre historico central
+- `apps-script.gs` como codigo principal.
+- `appsscript.json` como manifiesto del proyecto.
 
-El historico incluido queda guardado en el navegador durante 60 dias. Para que el historico quede centralizado en Google Sheets, conviene sumar un endpoint de Google Apps Script que reciba el control finalizado y lo escriba en una hoja `HISTORICO_CONTROL_DIARIO`.
+Para ver/editar el manifiesto en Apps Script:
 
-## Escritura en CONTROL_FIRMAS
+1. Ir a Configuracion del proyecto.
+2. Activar "Mostrar el archivo de manifiesto appsscript.json en el editor".
+3. Pegar el contenido de `appsscript.json`.
 
-Para que los checks de firmas se registren en la hoja `CONTROL_FIRMAS`, usar el Apps Script combinado del proyecto de carga de servicios:
+## Autorizacion necesaria
 
-`C:\Users\irina\Desktop\HTML\SBVP_CARGA DE SERVICIOS\apps-script.gs`
+Antes de usar la app publicada, ejecutar desde Apps Script:
 
-Ese archivo ya contiene las acciones de carga de servicios y tambien acepta `updateSignature` para actualizar `CONTROL_FIRMAS`.
+`autorizarServiciosGoogle()`
 
-Pasos:
+Aceptar los permisos de Google Sheets, Drive y Docs. Esto es necesario para que se creen las copias editables en Drive.
 
-1. Abrir el proyecto de Apps Script que usa `SBVP_CARGA DE SERVICIOS`.
-2. Reemplazar/actualizar ahi el contenido con `apps-script.gs`.
-3. Implementar una nueva version como aplicacion web.
-4. Copiar la URL de la aplicacion web.
-5. Pegar esa URL en `app.js`, en `CONFIG.appsScriptUrl`.
+Luego ejecutar:
 
-Si `CONFIG.appsScriptUrl` queda vacio, la app guarda las firmas localmente como pendientes y avisa en pantalla.
+`probarCarpetaDrive()`
+
+Debe crear un documento de prueba en la carpeta configurada.
+
+## Carpeta Drive actual
+
+Las copias editables se guardan en:
+
+`https://drive.google.com/drive/folders/1-IkiEXQSUdiXDnlfYxGPTSOPr8_sWjhB`
+
+Si la cuenta que ejecuta el Apps Script no tiene permisos sobre esa carpeta, el script usa una carpeta fallback llamada `SBVP_PARTES_EDITABLES` y deja el detalle en la hoja `ERRORES`.
+
+## Control de firmas
+
+Cuando se genera un parte, Apps Script crea o actualiza una fila en la hoja `CONTROL_FIRMAS`.
+Cuando se imprime el frente, completo o incompleto, esa misma fila pasa de `pendiente_impresion` a `frente_impreso`.
+
+Columnas principales:
+
+- `control_id`
+- `servicio_id`
+- `parte_servicio`
+- `fecha_servicio`
+- `fecha_generacion`
+- `fecha_impresion_frente`
+- `tipo_ultima_impresion`
+- `estado_impresion`
+- `persona_a_cargo`
+- `operador`
+- `firma_persona_a_cargo`
+- `firma_operador`
+- `controlado`
+- `controlado_en`
+- `controlado_por`
+- `observaciones`
+
+El futuro panel de control debe leer `action=data`, usar `controlFirmas`, mostrar pendientes no controlados y actualizar firmas con `action=actualizarControlFirma`.
+Estados esperados:
+
+- `pendiente_impresion`: falta imprimir y firmar.
+- `frente_impreso`: falta controlar firmas o marcarlo controlado.

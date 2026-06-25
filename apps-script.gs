@@ -20,6 +20,7 @@ function doPost(e) {
     if (action === 'guardarParte') return outputResponse(saveParte(payload.parte, payload.options || {}), e);
     if (action === 'guardarEditable') return outputResponse(saveEditableOnly(payload.parte), e);
     if (action === 'actualizarControlFirma') return outputResponse(updateSignatureControl(payload.control), e);
+    if (action === 'updateSignature') return outputResponse(updateSignatureFromControlDiario(payload), e);
     if (action === 'metricas') return outputResponse(rebuildMetricas(), e);
     throw new Error('Accion no soportada: ' + action);
   } catch (error) {
@@ -174,6 +175,19 @@ function updateSignatureControl(control) {
   if (patch.controlado === true && !patch.controlado_en) patch.controlado_en = new Date();
   upsertObject(ss, CONFIG.sheets.controlFirmas, 'control_id', control.control_id, patch);
   return { ok: true, control_id: control.control_id };
+}
+
+function updateSignatureFromControlDiario(payload) {
+  if (!payload || !payload.control_id) throw new Error('Falta control_id');
+  return updateSignatureControl({
+    control_id: payload.control_id,
+    firma_persona_a_cargo: payload.firma_persona_a_cargo,
+    firma_operador: payload.firma_operador,
+    controlado: payload.controlado,
+    controlado_en: payload.controlado_en || '',
+    controlado_por: payload.controlado_por || '',
+    observaciones: payload.observaciones || payload.observacion || ''
+  });
 }
 
 function saveEditableOnly(parte) {
